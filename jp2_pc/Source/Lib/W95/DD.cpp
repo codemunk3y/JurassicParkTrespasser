@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive. 1996
+ * Copyright ï¿½ DreamWorks Interactive. 1996
  *
  * Implementation of dd.hpp.
  *
@@ -128,7 +128,13 @@ int32 CInitDD::Initialize()
 
 	if (!b_use_reg || !b_fullscreen)
 	{
-		DirectDraw::err = DirectDraw::pdd4->SetCooperativeLevel(0, DDSCL_NORMAL);
+		// pdd4 (IDirectDraw4) is only created when D3D is enabled; in software mode
+		// it is null.  Dereferencing it here caused a null-pointer terminal error in
+		// windowed software mode.  Fall back to the always-present IDirectDraw2.
+		if (DirectDraw::pdd4)
+			DirectDraw::err = DirectDraw::pdd4->SetCooperativeLevel(0, DDSCL_NORMAL);
+		else if (DirectDraw::pdd)
+			DirectDraw::err = DirectDraw::pdd->SetCooperativeLevel(0, DDSCL_NORMAL);
 	}
 
     return iRet;
