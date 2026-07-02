@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive. 1996
+ * Copyright ï¿½ DreamWorks Interactive. 1996
  *
  * Implementation of RasterVid.hpp.
  *
@@ -253,7 +253,38 @@ private:
 		sd.ddsCaps.dwCaps = DDSCAPS_PRIMARYSURFACE;
 		DirectDraw::err = DirectDraw::pdd->CreateSurface(&sd, &pddsPrimary, 0);
 
-		if (i_buffers > 1)
+		//
+		// On modern Windows the desktop (and hence a back buffer that inherits its
+		// format) is 32-bit, but the software rasterizer is a native 16-bit engine.
+		// In windowed mode (i_bits == 0) give it a dedicated 16-bit 565 system-memory
+		// back buffer; DirectDraw's Blt converts 16->desktop depth when presenting to
+		// the primary (see CRasterWin::Flip).  Without this the 16-bit pixels are
+		// written into a 32-bit surface and the image comes out tinted purple.
+		//
+		CDDSize<DDSURFACEDESC> sdprim;
+		if (pddsPrimary) pddsPrimary->GetSurfaceDesc(&sdprim);
+
+		if (sdprim.ddpfPixelFormat.dwRGBBitCount > 16)
+		{
+			CDDSize<DDSURFACEDESC> sdb;
+			sdb.dwFlags = DDSD_WIDTH | DDSD_HEIGHT | DDSD_CAPS | DDSD_PIXELFORMAT;
+			sdb.dwWidth  = RoundUp(i_width, 8);
+			sdb.dwHeight = i_height;
+			sdb.ddsCaps.dwCaps = DDSCAPS_OFFSCREENPLAIN | DDSCAPS_SYSTEMMEMORY;
+			new(&sdb.ddpfPixelFormat) CDDSize<DDPIXELFORMAT>;
+			sdb.ddpfPixelFormat.dwFlags       = DDPF_RGB;
+			sdb.ddpfPixelFormat.dwRGBBitCount = 16;
+			sdb.ddpfPixelFormat.dwRBitMask    = 0xF800;
+			sdb.ddpfPixelFormat.dwGBitMask    = 0x07E0;
+			sdb.ddpfPixelFormat.dwBBitMask    = 0x001F;
+			DirectDraw::err = DirectDraw::pdd->CreateSurface(&sdb, &pddsDraw, 0);
+			if (!pddsDraw)
+			{
+				// 16-bit offscreen not allowed; fall back to sharing the primary.
+				pddsDraw = pddsPrimary;
+			}
+		}
+		else if (i_buffers > 1)
 		{
 			sd.dwFlags = DDSD_WIDTH | DDSD_HEIGHT | DDSD_CAPS;
 
@@ -287,12 +318,13 @@ private:
 				DirectDraw::err = DirectDraw::pdd->CreateSurface(&sd, &pddsDraw, 0);
 			}
 		}
-		else 
+		else
 		{
 			// Just a single buffer.
 			// Copy the COM pointer.
 			pddsDraw = pddsPrimary;
 		}
+
 
 		return true;
 	}
