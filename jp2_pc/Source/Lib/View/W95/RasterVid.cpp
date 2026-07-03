@@ -277,8 +277,10 @@ private:
 			sdb.ddpfPixelFormat.dwRBitMask    = 0xF800;
 			sdb.ddpfPixelFormat.dwGBitMask    = 0x07E0;
 			sdb.ddpfPixelFormat.dwBBitMask    = 0x001F;
-			DirectDraw::err = DirectDraw::pdd->CreateSurface(&sdb, &pddsDraw, 0);
-			if (!pddsDraw)
+			// Use the raw HRESULT here rather than DirectDraw::err, whose
+			// assignment operator throws a TerminalError on any failure.
+			HRESULT hr_draw = DirectDraw::pdd->CreateSurface(&sdb, &pddsDraw, 0);
+			if (FAILED(hr_draw) || !pddsDraw)
 			{
 				// 16-bit offscreen not allowed; fall back to sharing the primary.
 				pddsDraw = pddsPrimary;

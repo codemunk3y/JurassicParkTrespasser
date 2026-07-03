@@ -254,11 +254,18 @@ void SetSpeedDefaults()
 	if (bSafemode())
 		return;
 
-	if (bAutoSettings(true))
+	// Re-apply the auto settings once whenever this detection logic changes.
+	// The key stores a version number; the original code (and the broken
+	// processor.dll era) stored 1, which left modern machines mis-classified as
+	// "slow" (320x240 / lowest quality).  Bumping to 2 forces a single re-detect
+	// on those machines, then respects the user's own choices afterwards.
+	const int i_settings_version = 2;
+	if (GetRegValue(strAUTOSETTINGS, 0) >= i_settings_version)
 	{
 		Trace(("Settings for machine already performed...\n"));
 		return;
 	}
+	SetRegValue(strAUTOSETTINGS, i_settings_version);
 
 	// Set defaults.
 	SetRegValue(REG_KEY_RENDERING_QUALITY, DEFAULT_RENDERING_QUALITY);

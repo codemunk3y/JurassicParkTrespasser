@@ -347,8 +347,14 @@ void CGameWnd::OnDestroy()
 {
     RECT        rc;
 
+    // We are leaving the game and returning to the menu, which renders at the
+    // fixed menu resolution.  Clear bInGame first so GetCurrentClientSize()
+    // reports the menu size, not the (higher) in-game render size, when the
+    // screen below is recreated.  (The destructor also clears it - harmless.)
+    g_CTPassGlobals.bInGame = false;
+
     POINT screenSize = GetCurrentClientSize();
-	
+
     SetRect(&rc, 0, 0, screenSize.x, screenSize.y);
     ClipCursor(&rc);
 

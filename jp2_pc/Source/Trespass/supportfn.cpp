@@ -24,6 +24,7 @@
 #include "main.h"
 #include "uiwnd.h"
 #include "uidlgs.h"
+#include "tpassglobals.h"
 #include "cdib.h"
 #include "resource.h"
 
@@ -1344,16 +1345,48 @@ POINT GetCurrentClientSize()
     // render resolution so the screen raster and all UI layout use it.
     if (bGetFullScreen())
     {
-        // Render at a fixed 640x480 - the native resolution of the menu/UI art -
-        // and upscale to the screen.  We deliberately do NOT use bGetDimensions
-        // here: when CPU-speed detection fails (Processor.dll returns 0 on modern
-        // CPUs) the game applies a 320x240 "slow machine" default, which is too
-        // small for the 640x480 UI and crops it.
+        // Menus / UI render at the fixed 640x480 native resolution of the
+        // menu art and are upscaled to the screen.
         int w = 640;
         int h = 480;
-        bGetDimensions(w, h);
-        if (w < 640) w = 640;
-        if (h < 480) h = 480;
+
+        // The in-game 3D view, however, can render at a much higher resolution
+        // on modern hardware.  Render it at the screen's native height in 4:3 so
+        // the present blit maps it 1:1 vertically (crisp, no upscaling blur) and
+        // pillar-boxes the sides - the same 4:3 framing the menus use.
+        // Trespasser has essentially no fixed-size 2D in-game HUD art (health is
+        // a body tattoo, ammo is spoken), so a high render resolution is safe
+        // here, unlike the fixed 640x480 menu art.
+        if (g_CTPassGlobals.bInGame)
+        {
+            int scr_h = GetSystemMetrics(SM_CYSCREEN);
+
+            // Render at a higher 4:3 resolution and let CRasterWin::Flip upscale
+            // it to the screen.  Cap the render HEIGHT at 768 (=> 1024x768): the
+            // emulated DirectDraw on modern Windows fails on very large offscreen
+            // surfaces (a full 1440x1080 back buffer creates but can't be
+            // blitted), whereas a smaller buffer that is stretched up to the
+            // screen - exactly what the old 640x480 path did - works reliably.
+            // 1024x768 is a classic, safe surface size and still ~2.5x sharper
+            // than 640x480.
+            if (scr_h > 768)
+                scr_h = 768;
+
+            h = scr_h;
+            w = h * 4 / 3;
+
+            // The rasterizer wants the stride to be a whole number of pixels;
+            // keep both dimensions a multiple of 8.
+            w &= ~7;
+            h &= ~7;
+
+            if (w < 640 || h < 480)
+            {
+                w = 640;
+                h = 480;
+            }
+        }
+
         POINT result = { w, h };
         return result;
     }
