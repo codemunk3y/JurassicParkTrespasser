@@ -421,15 +421,32 @@ void CGameWnd::SetupGameStoppage()
     m_bPaused = TRUE;
     m_pUIMgr->m_bDrawMouse = TRUE;
 
-	// Limit cursor movement.
-	RECT rc;
-	SetRect(&rc, 0, 0, prasMainScreen->iWidth, prasMainScreen->iHeight);
-	ClipCursor(&rc);
+	// Limit cursor movement to the actual window client area (screen
+	// coordinates), not the render resolution.  In borderless fullscreen the
+	// render buffer (e.g. 320x240) is upscaled to fill the window, so clipping
+	// to the render size would trap the cursor in a tiny top-left box.  The UI
+	// loop maps the screen position back into render space.
+	{
+		RECT  rc;
+		POINT ptTL, ptBR;
+		GetClientRect(g_hwnd, &rc);
+		ptTL.x = rc.left;  ptTL.y = rc.top;
+		ptBR.x = rc.right; ptBR.y = rc.bottom;
+		ClientToScreen(g_hwnd, &ptTL);
+		ClientToScreen(g_hwnd, &ptBR);
+		SetRect(&rc, ptTL.x, ptTL.y, ptBR.x, ptBR.y);
+		ClipCursor(&rc);
 
-    SetCursorPos(prasMainScreen->iWidth / 2, 
-                 prasMainScreen->iHeight / 2);
+		// Center the cursor on the real client area centre.
+		SetCursorPos((ptTL.x + ptBR.x) / 2, (ptTL.y + ptBR.y) / 2);
+	}
 
-    g_CTPassGlobals.CaptureBackground();
+    // Capture from the back buffer (pddsDraw), not the primary.  In borderless
+    // windowed mode the primary is the DWM-composited desktop; reading it back
+    // via GDI GetDC is unreliable (and returns the pillar-boxed, upscaled image
+    // rather than the clean render), which showed up as a purple pause-menu
+    // background.  pddsDraw holds the last rendered frame in native 16-bit 565.
+    g_CTPassGlobals.CaptureBackground(true);
 	g_CTPassGlobals.bHardReset = false;
 }
 

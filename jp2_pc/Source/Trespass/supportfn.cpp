@@ -946,10 +946,25 @@ void SetupGameScreen()
 	
     bSystemMem = bGetSystemMem();
 
-    SetRect(&rc, 0, 0, iWidth, iHeight);
-    ClipCursor(&rc);
+    // Clip the cursor to the actual window client area (screen coordinates),
+    // not the render resolution.  The in-game mouse-look (Control.cpp) recenters
+    // the cursor to the window centre every frame and derives view rotation from
+    // the delta.  In borderless fullscreen the window is the whole screen, so a
+    // clip to the small render rect (e.g. 640x480 top-left) would clamp the
+    // recenter target outside the clip - producing a constant delta that spins
+    // the view up to the sky.
+    {
+        POINT ptTL, ptBR;
+        GetClientRect(g_hwnd, &rc);
+        ptTL.x = rc.left;  ptTL.y = rc.top;
+        ptBR.x = rc.right; ptBR.y = rc.bottom;
+        ClientToScreen(g_hwnd, &ptTL);
+        ClientToScreen(g_hwnd, &ptBR);
+        SetRect(&rc, ptTL.x, ptTL.y, ptBR.x, ptBR.y);
+        ClipCursor(&rc);
+    }
 
-    prnshMain->bCreateScreen(iWidth, 
+    prnshMain->bCreateScreen(iWidth,
                              iHeight, 
                              16, 
                              bSystemMem);
@@ -1323,10 +1338,80 @@ void ClearInputState(bool bCenterMouse /* = false */)
 
 POINT GetCurrentClientSize()
 {
+    // In (borderless) fullscreen the window covers the whole desktop, but we
+    // render at a fixed low resolution and upscale it to the screen (see
+    // CRasterWin::Flip and the mouse mapping in CUIWnd).  Report that fixed
+    // render resolution so the screen raster and all UI layout use it.
+    if (bGetFullScreen())
+    {
+        // Render at a fixed 640x480 - the native resolution of the menu/UI art -
+        // and upscale to the screen.  We deliberately do NOT use bGetDimensions
+        // here: when CPU-speed detection fails (Processor.dll returns 0 on modern
+        // CPUs) the game applies a 320x240 "slow machine" default, which is too
+        // small for the 640x480 UI and crops it.
+        int w = 640;
+        int h = 480;
+        bGetDimensions(w, h);
+        if (w < 640) w = 640;
+        if (h < 480) h = 480;
+        POINT result = { w, h };
+        return result;
+    }
+
     RECT rect = { 0 };
     GetClientRect(g_hwnd, &rect);
     POINT result = { rect.right, rect.bottom };
     return result;
+}
+
+
+void MapScreenPointToRender(POINT& pt)
+{
+    if (!bGetFullScreen())
+        return;
+
+    const int scr_w = GetSystemMetrics(SM_CXSCREEN);
+    const int scr_h = GetSystemMetrics(SM_CYSCREEN);
+
+    // Use the ACTUAL render buffer dimensions (what CRasterWin::Flip blits from
+    // and pillar/letter-boxes), not the configured bGetDimensions value.  The
+    // in-game buffer can be a different size than the config (e.g. buffer
+    // 640x480 while the config requests 320x240); mapping with the config size
+    // would scale the cursor into the wrong range and cap it at the middle of
+    // the screen.
+    int ren_w = DEFAULT_SIZE_WIDTH;
+    int ren_h = DEFAULT_SIZE_HEIGHT;
+    if (prasMainScreen && prasMainScreen->iWidthFront > 0 && prasMainScreen->iHeightFront > 0)
+    {
+        ren_w = prasMainScreen->iWidthFront;
+        ren_h = prasMainScreen->iHeightFront;
+    }
+    else
+    {
+        bGetDimensions(ren_w, ren_h);
+    }
+
+    // Same pillar/letter-box fit used by CRasterWin::Flip.
+    int dst_w = scr_w;
+    int dst_h = scr_w * ren_h / ren_w;
+    if (dst_h > scr_h)
+    {
+        dst_h = scr_h;
+        dst_w = scr_h * ren_w / ren_h;
+    }
+    const int dst_x = (scr_w - dst_w) / 2;
+    const int dst_y = (scr_h - dst_h) / 2;
+
+    int rx = (dst_w > 0) ? (pt.x - dst_x) * ren_w / dst_w : 0;
+    int ry = (dst_h > 0) ? (pt.y - dst_y) * ren_h / dst_h : 0;
+
+    if (rx < 0)            rx = 0;
+    else if (rx > ren_w-1) rx = ren_w - 1;
+    if (ry < 0)            ry = 0;
+    else if (ry > ren_h-1) ry = ren_h - 1;
+
+    pt.x = rx;
+    pt.y = ry;
 }
 
 

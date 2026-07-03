@@ -220,6 +220,8 @@ public:
     void GetWndFile(LPSTR psz, int ic);
 
     void UIButtonUp(CUIButton * pbutton);
+
+    void OnKey(UINT vk, BOOL fDown, int cRepeat, UINT flags);
 };
 
 

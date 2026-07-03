@@ -793,6 +793,12 @@ int WINAPI WinMain(HINSTANCE hInstance,
 {
     int                 iRet;
 
+    // Render/window/cursor code works in physical pixels; declare the process
+    // DPI-aware so GetSystemMetrics, the DirectDraw primary surface and
+    // GetCursorPos all agree on a scaled (high-DPI) display.  Without this the
+    // borderless-fullscreen image is cropped and the cursor mapping drifts.
+    SetProcessDPIAware();
+
 #if BUILDVER_MODE == MODE_FINAL
     __try
 #endif
@@ -888,12 +894,36 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
     int windowHeight = 480;
     bGetDimensions(windowWidth, windowHeight);
 
-    if (!CreateWindowEx(0,
+    // The screen raster is created at the window's client size (see
+    // CMainWnd::InitSurface), so the window dimensions decide the render
+    // resolution.  Exclusive DirectDraw fullscreen is broken on modern
+    // Windows (see forceWindowMode in RasterVid.cpp), so "fullscreen" is
+    // implemented as a borderless window covering the whole screen.
+    int   windowX = 0;
+    int   windowY = 0;
+    DWORD dwExStyle = 0;
+    if (bGetFullScreen())
+    {
+        windowWidth  = GetSystemMetrics(SM_CXSCREEN);
+        windowHeight = GetSystemMetrics(SM_CYSCREEN);
+        // Topmost so the borderless window sits above the taskbar and other
+        // windows (otherwise the taskbar composites over the bottom of the
+        // screen and that strip flickers).
+        dwExStyle = WS_EX_TOPMOST;
+    }
+    else
+    {
+        // Centre the window on the screen instead of pinning it top-left.
+        windowX = (GetSystemMetrics(SM_CXSCREEN) - windowWidth)  / 2;
+        windowY = (GetSystemMetrics(SM_CYSCREEN) - windowHeight) / 2;
+    }
+
+    if (!CreateWindowEx(dwExStyle,
                     g_szAppName,
                     sz,
                     WS_VISIBLE | WS_POPUP | WS_SYSMENU,
-                    0,
-                    0,
+                    windowX,
+                    windowY,
                     windowWidth,
                     windowHeight,
                     NULL,
@@ -907,6 +937,14 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 
     ShowWindow(g_hwnd, nCmdShow);
     UpdateWindow(g_hwnd);
+
+    if (bGetFullScreen())
+    {
+        // Force the borderless window above the taskbar and give it focus.
+        SetWindowPos(g_hwnd, HWND_TOPMOST, 0, 0, windowWidth, windowHeight,
+                     SWP_SHOWWINDOW);
+        SetForegroundWindow(g_hwnd);
+    }
 
     return TRUE;
 }

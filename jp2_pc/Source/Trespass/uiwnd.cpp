@@ -499,6 +499,7 @@ void CUIWnd::WindowLoop()
         PreLoopCall();
 
         GetCursorPos(&m_pUIMgr->m_ptMouse);
+        MapScreenPointToRender(m_pUIMgr->m_ptMouse);
         CheckMessages();
 
         if (m_pUIMgr->m_bActive && !m_bExitWnd)

@@ -1161,6 +1161,23 @@ void CInGameOptionsWnd::GetWndFile(LPSTR psz, int ic)
 }
 
 
+void CInGameOptionsWnd::OnKey(UINT vk, BOOL fDown, int cRepeat, UINT flags)
+{
+    // Escape toggles the in-game menu closed (same as the Resume button).
+    // Only act on a fresh key-down: ignore key-up and auto-repeat so that
+    // holding Escape - or the very keypress that opened this menu - does not
+    // immediately close it again.  (KF_REPEAT lives in the HIWORD(lParam)
+    // flags passed to the WM_KEYDOWN cracker.)
+    if (vk == VK_ESCAPE && fDown && !(flags & KF_REPEAT))
+    {
+        EndUIWnd(0);
+        return;
+    }
+
+    CUIDlg::OnKey(vk, fDown, cRepeat, flags);
+}
+
+
 void CInGameOptionsWnd::UIButtonUp(CUIButton * pbutton)
 {
     switch (pbutton->GetID())

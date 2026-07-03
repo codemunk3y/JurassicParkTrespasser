@@ -137,6 +137,12 @@ void DisplayLoadingFileError(int iErr);
 void ClearInputState(bool bCenterMouse = false);
 POINT GetCurrentClientSize();
 
+// Maps a screen-space point (e.g. from GetCursorPos) into render-space
+// coordinates.  In borderless fullscreen the render buffer is upscaled and
+// pillar/letter-boxed onto the screen, so cursor positions must be mapped back.
+// A no-op in windowed mode.
+void MapScreenPointToRender(POINT& pt);
+
 
 #endif // __SUPPORTFN_H__
 

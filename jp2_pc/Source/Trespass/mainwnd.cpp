@@ -99,7 +99,20 @@ BOOL CMainWnd::InitSurface()
 		}
 	}
 
-    SetRect(&rc, 0, 0, screenSize.x, screenSize.y);
+    // Clip the cursor to the actual window client area (screen coordinates),
+    // not the render resolution.  In borderless fullscreen the render buffer is
+    // upscaled, so the window (full screen) is larger than screenSize; the
+    // cursor position is mapped back to render space in the UI loop.
+    {
+        RECT  rcClient;
+        POINT ptTL, ptBR;
+        GetClientRect(m_hwnd, &rcClient);
+        ptTL.x = rcClient.left;  ptTL.y = rcClient.top;
+        ptBR.x = rcClient.right; ptBR.y = rcClient.bottom;
+        ClientToScreen(m_hwnd, &ptTL);
+        ClientToScreen(m_hwnd, &ptBR);
+        SetRect(&rc, ptTL.x, ptTL.y, ptBR.x, ptBR.y);
+    }
     ClipCursor(&rc);
 
 	if (!m_pUIMgr)
@@ -369,6 +382,18 @@ void CMainWnd::OnActivateApp(HWND hwnd, BOOL fActivate, DWORD dwThreadId)
 
     if (!fActivate)
     {
+        // Drop the always-on-top style whenever we lose focus so the taskbar,
+        // Alt+Tab and Task Manager can come forward over the borderless
+        // fullscreen window.  Without this a hung game stays pinned above
+        // everything, which can leave Ctrl+Alt+Del showing only a black
+        // screen.  Also release the cursor clip so the mouse isn't trapped.
+        if (bGetFullScreen())
+        {
+            SetWindowPos(g_hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            ClipCursor(NULL);
+        }
+
         if (m_pUIMgr->m_bActive)
         {
             m_pUIMgr->m_bPause = TRUE;
@@ -392,6 +417,11 @@ void CMainWnd::OnActivateApp(HWND hwnd, BOOL fActivate, DWORD dwThreadId)
         }
 
         ShowWindow(m_hwnd, SW_RESTORE);
+
+        // Restore always-on-top now that we have focus again (fullscreen only).
+        if (bGetFullScreen())
+            SetWindowPos(g_hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 
         ClearInputState();
         ForceShowCursor(FALSE);
@@ -709,8 +739,25 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uiMsg, WPARAM wParam, LPARAM lParam)
     switch (uiMsg)
     {
 		case WM_SYSKEYDOWN:
-		case WM_SYSKEYUP: 
+		case WM_SYSKEYUP:
 			if (wParam==VK_MENU || wParam==VK_SPACE) return 0;
+			break;
+
+		case WM_WINDOWPOSCHANGING:
+			// In borderless fullscreen, keep the window covering the whole
+			// screen.  Several code paths (SetupGameScreen, the GDI loading
+			// dialogs) shrink/move the main window to the render resolution,
+			// which would break fullscreen; override them here in one place.
+			if (bGetFullScreen())
+			{
+				WINDOWPOS* pwp = (WINDOWPOS*)lParam;
+				pwp->x  = 0;
+				pwp->y  = 0;
+				pwp->cx = GetSystemMetrics(SM_CXSCREEN);
+				pwp->cy = GetSystemMetrics(SM_CYSCREEN);
+				pwp->flags &= ~(SWP_NOSIZE | SWP_NOMOVE);
+				return 0;
+			}
 			break;
 
         HANDLE_MSG(hwnd, WM_ACTIVATE,       g_pMainWnd->OnActivate);

@@ -1248,14 +1248,18 @@ rptr<CRaster> prasReadBMP(const char* str_bitmap_name, bool b_vid)
 			// Construct a regular DirectDraw interface.
 			priv_self.ConstructSoftware(hwnd, i_width, i_height, i_bits, i_buffers, seteras);
 
-			// Create a DirectDrawClipper object, needed for the window.
-			if (!bFullScreen)
+			// Create a DirectDrawClipper object, needed for the window.  We also
+			// need it for borderless "fullscreen" (forceWindowMode keeps us in
+			// windowed DirectDraw cooperation even though bFullScreen is set):
+			// blitting to the primary through a clipper composites correctly with
+			// DWM and avoids the heavy flicker of raw primary access.
+			if (!bFullScreen || forceWindowMode)
 			{
 				DirectDraw::err = DirectDraw::pdd->CreateClipper(0, &pddclip, 0);
 				DirectDraw::err = pddclip->SetHWnd(0, hwnd);
 				DirectDraw::err = pddsPrimary->SetClipper(pddclip);
 			}
-			AlwaysAssert(bFullScreen || pddclip);
+			AlwaysAssert((bFullScreen && !forceWindowMode) || pddclip);
 		}
 		AlwaysAssert(pddsDraw);
 		AlwaysAssert(pddsPrimary);
@@ -1474,58 +1478,74 @@ rptr<CRaster> prasReadBMP(const char* str_bitmap_name, bool b_vid)
 		RECT rc_src, rc_dest;
 		SetRect(&rc_src, 0, 0, iWidthFront, iHeightFront);
 
-		if (!bFullScreen)
+		if (!bFullScreen || forceWindowMode)
 		{
 			//
-			// Windowed Mode - cannot flip, must do a blit!
-			// NOTE: Cannot use a fast blit even if the surfaces sizes match
-			//		 because there is a clipper attached to the surface. This
-			//		 will cause the BltFast call to fail.
+			// Windowed / borderless-fullscreen present.  Blit through the clipper
+			// to the window's client area (DWM-friendly - raw primary access
+			// flickers on modern Windows).  The fixed-resolution render buffer is
+			// stretched to fit and pillar/letter-boxed in black.
 			//
-
-
 			HWND hwnd;
 			pddclip->GetHWnd(&hwnd);
 
-			SetRect(&rc_dest, 0, 0, iWidthFront, iHeightFront);
-			// Offset the rc_dest rect by the window's screen location.
-			::ClientToScreen(hwnd, &rc_dest);
-			rc_dest.left	+=((rc_dest.right - rc_dest.left) - rc_src.right)>>1;
-			rc_dest.top		+=((rc_dest.bottom - rc_dest.top) - rc_src.bottom)>>1;
-			rc_dest.right	= rc_dest.left + rc_src.right;
-			rc_dest.bottom	= rc_dest.top  + rc_src.bottom;
+			RECT rc_client;
+			GetClientRect(hwnd, &rc_client);
+			int cli_w = rc_client.right;
+			int cli_h = rc_client.bottom;
 
-			// do a stretch blit to fill the window
-			while (bRestore(pddsPrimary->Blt(&rc_dest, pddsDraw, &rc_src, DDBLT_WAIT, NULL)));
+			int ren_w = iWidthFront;
+			int ren_h = iHeightFront;
+
+			// Aspect-preserving fit into the client area.
+			int dst_w = cli_w;
+			int dst_h = ren_w ? cli_w * ren_h / ren_w : cli_h;
+			if (dst_h > cli_h)
+			{
+				dst_h = cli_h;
+				dst_w = ren_h ? cli_h * ren_w / ren_h : cli_w;
+			}
+			int off_x = (cli_w - dst_w) / 2;
+			int off_y = (cli_h - dst_h) / 2;
+
+			// The blit target is the primary, so work in screen coordinates.
+			POINT org = { 0, 0 };
+			::ClientToScreen(hwnd, &org);
+
+			// Clear the pillar/letter-box border strips only (never the image
+			// area), so they stay black without flashing.  All blits use a
+			// BOUNDED retry: bRestore() loops on any non-DD_OK result, so an
+			// unbounded loop would hang forever if a surface is persistently lost
+			// (e.g. during an Alt-Tab / focus change) - which froze the game.
+			#define BLIT_RETRY(expr) { int _n = 0; while (_n++ < 16 && bRestore(expr)); }
+			CDDSize<DDBLTFX> ddbltfx;
+			ddbltfx.dwFillColor = 0;
+			RECT rc_bar;
+			if (off_x > 0)
+			{
+				SetRect(&rc_bar, org.x, org.y, org.x + off_x, org.y + cli_h);
+				BLIT_RETRY(pddsPrimary->Blt(&rc_bar, NULL, NULL, DDBLT_COLORFILL | DDBLT_WAIT, &ddbltfx));
+				SetRect(&rc_bar, org.x + off_x + dst_w, org.y, org.x + cli_w, org.y + cli_h);
+				BLIT_RETRY(pddsPrimary->Blt(&rc_bar, NULL, NULL, DDBLT_COLORFILL | DDBLT_WAIT, &ddbltfx));
+			}
+			if (off_y > 0)
+			{
+				SetRect(&rc_bar, org.x, org.y, org.x + cli_w, org.y + off_y);
+				BLIT_RETRY(pddsPrimary->Blt(&rc_bar, NULL, NULL, DDBLT_COLORFILL | DDBLT_WAIT, &ddbltfx));
+				SetRect(&rc_bar, org.x, org.y + off_y + dst_h, org.x + cli_w, org.y + cli_h);
+				BLIT_RETRY(pddsPrimary->Blt(&rc_bar, NULL, NULL, DDBLT_COLORFILL | DDBLT_WAIT, &ddbltfx));
+			}
+
+			SetRect(&rc_dest, org.x + off_x, org.y + off_y,
+			                  org.x + off_x + dst_w, org.y + off_y + dst_h);
+			BLIT_RETRY(pddsPrimary->Blt(&rc_dest, pddsDraw, &rc_src, DDBLT_WAIT, NULL));
+			#undef BLIT_RETRY
 		}
 		else
 		{
-			if (bFlippable) 
-			{  
+			// True exclusive fullscreen (unreachable while forceWindowMode is set).
+			if (bFlippable)
 				while (bRestore(pddsPrimary->Flip(pddsDraw, DDFLIP_WAIT)));
-			}
-			else if (iWidth == iWidthFront && iHeight == iHeightFront)
-			{
-				//
-				// Call BltFast function, because no clipping or stretching needed.
-				//
-
-				while (bRestore(pddsPrimary->BltFast(0, 0, pddsDraw, &rc_src, DDBLTFAST_WAIT)));
-			}
-			else
-			{
-				//
-				// Call Blt function, which can clip and stretch. Offset the destination rect
-				// by the size of the source window so the view port is centered.
-				//
-				SetRect(&rc_dest, 0, 0, iWidthFront, iHeightFront);
-				rc_dest.left	+=((rc_dest.right - rc_dest.left) - rc_src.right)>>1;
-				rc_dest.top		+=((rc_dest.bottom - rc_dest.top) - rc_src.bottom)>>1;
-				rc_dest.right	= rc_dest.left + rc_src.right;
-				rc_dest.bottom	= rc_dest.top  + rc_src.bottom;
-
-				while (bRestore(pddsPrimary->Blt(&rc_dest, pddsDraw, &rc_src, DDBLT_WAIT, NULL)));
-			}
 		}
 
 		// Clear the Z buffer if required.
