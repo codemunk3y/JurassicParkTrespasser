@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive. 1997
+ * Copyright ï¿½ DreamWorks Interactive. 1997
  *
  * Implementation of texture packing.
  *
@@ -1519,21 +1519,22 @@ CRenderTexturePackSurface::CRenderTexturePackSurface
 	// First create two interleaved rasters of the required bit depth
 	//*****************************************************************************************
 
-	// Create a virtual memory raster that is 256x256 pixels with a stride of 512 pixels.
+	// Create a virtual memory raster iTEXPAGE_MAX_WIDTH square with a stride of
+	// iTEXPAGE_STRIDE pixels (two interleaved pages share one surface).
 	// Packed surfaces have no pixel format..
 	// NOTE:	If the texture pack type is 'smallest mip' then the memory comes fom the sub
 	//			block allocator.
 	rptr<CRaster>	pras_a = rptr_cast(CRaster, rptr_new CRasterMem(
-										256,
-										256,
+										iTEXPAGE_MAX_WIDTH,
+										iTEXPAGE_MAX_WIDTH,
 										u4_bits,
-										512*(u4_bits/8),
+										iTEXPAGE_STRIDE*(u4_bits/8),
 										NULL,
 										(ept == eptSMALLEST)?emtTexManSubVirtual:emtTexManVirtual) );
 
 	// the second surface is created as a sub rectangle of the first, initially using the
-	// same address space but the pAddress element is shifted on by 256 texels.
-	SRect			rc(0,0,256,256);
+	// same address space but the pAddress element is shifted on by iTEXPAGE_MAX_WIDTH texels.
+	SRect			rc(0,0,iTEXPAGE_MAX_WIDTH,iTEXPAGE_MAX_WIDTH);
 	rptr<CRaster>	pras_b = rptr_cast(CRaster, rptr_new CRasterMem(pras_a, rc) );
 
 	// surface B will use the memory that is unused within the interleave on surface A.

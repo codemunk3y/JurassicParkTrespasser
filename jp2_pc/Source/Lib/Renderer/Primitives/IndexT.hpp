@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive. 1996
+ * Copyright ï¿½ DreamWorks Interactive. 1996
  *
  * Contents:
  *		Classes for using different pixel indexing techniques for raster primitives.
@@ -528,8 +528,10 @@ public:
 	//**************************************
 	{
 		// Just copy into globals from stuff in the texture.
+		// The V component is shifted up by log2(page stride) so that the packed
+		// texel index is (V << iTEXPAGE_STRIDE_LOG2) | U.
 		bClampUV = pras->bNotTileable;
-		u4TextureTileMask = (pras->u4HeightTileMask << 9) | pras->u4WidthTileMask;
+		u4TextureTileMask = (pras->u4HeightTileMask << iTEXPAGE_STRIDE_LOG2) | pras->u4WidthTileMask;
 		u4TextureTileMaskStepU = pras->u4WidthTileMask;
 
 #if (TARGET_PROCESSOR == PROCESSOR_K6_3D)

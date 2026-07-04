@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive. 1996
+ * Copyright ï¿½ DreamWorks Interactive. 1996
  *
  * Contents:
  *		class CRaster and many descendents.
@@ -120,6 +120,26 @@
 
 // Set the margin for texture maps in pixels.
 const float fTexEdgeTolerance = 0.2f;
+
+//
+// Texture-page tiling geometry.
+//
+// Tiling (wrapping) textures live in texture pages whose row stride is a power
+// of two.  The horizontal texel coordinate wraps within the page width, and
+// there is a one-bit "gap" between the width and the stride so two pages can be
+// interleaved into a single surface (see TexturePackSurface.cpp).  The
+// perspective inner loop packs the texel index as
+// (V << iTEXPAGE_STRIDE_LOG2) | U, so iTEXPAGE_STRIDE_LOG2 must equal
+// log2(stride), and the maximum tileable width is half the stride.
+//
+// Shipping values: LOG2 = 9  => stride 512, max tiled width 256.
+// To prototype 512 tiling textures set LOG2 = 10 (stride 1024, max width 512)
+// and rebuild with VER_ASM = FALSE (the asm inner loops hard-code the 512
+// stride separately).
+//
+const int iTEXPAGE_STRIDE_LOG2 = 9;
+const int iTEXPAGE_STRIDE       = 1 << iTEXPAGE_STRIDE_LOG2;        // 512
+const int iTEXPAGE_MAX_WIDTH    = 1 << (iTEXPAGE_STRIDE_LOG2 - 1);  // 256
 
 #if (TARGET_PROCESSOR == PROCESSOR_K6_3D)
 

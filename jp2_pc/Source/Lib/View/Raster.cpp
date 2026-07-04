@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive. 1996
+ * Copyright ï¿½ DreamWorks Interactive. 1996
  *
  * Implementation of Raster.hpp.
  *
@@ -142,7 +142,7 @@
 		//
 		// Tiling is enabled in this build, set parameter appropriately. 
 		//
-		if ( iLinePixels == 512 && iWidth <= 256  )
+		if ( iLinePixels == iTEXPAGE_STRIDE && iWidth <= iTEXPAGE_MAX_WIDTH  )
 		{
 			uint32	u4_width_mask  = iWidth - 1;
 			uint32	u4_height_mask = iHeight - 1;
