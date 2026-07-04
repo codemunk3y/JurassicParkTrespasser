@@ -1483,10 +1483,18 @@ rptr<CRaster> prasReadBMP(const char* str_bitmap_name, bool b_vid)
 		if (!bFullScreen || forceWindowMode)
 		{
 			//
-			// Windowed / borderless-fullscreen present.  Blit through the clipper
-			// to the window's client area (DWM-friendly - raw primary access
-			// flickers on modern Windows).  The fixed-resolution render buffer is
-			// stretched to fit and pillar/letter-boxed in black.
+			// Windowed / borderless-fullscreen present.  Present with GDI, blitting
+			// from the back-buffer's surface DC to the window - through the window's
+			// paint cycle (BeginPaint/EndPaint).  We do NOT use DirectDraw's
+			// Blt-to-primary here: on modern Windows the emulated DirectDraw fails
+			// that blit for large offscreen surfaces (hr 0x88760827), which used to
+			// cap the render resolution.  We also do NOT blit to a raw GetDC(): a
+			// continuous GetDC+BitBlt is not reliably composited by DWM when the app
+			// is otherwise idle, so a static screen (the paused menu) only appeared
+			// while input kept arriving.  Presenting inside a BeginPaint/EndPaint
+			// cycle makes DWM composite every frame.  GDI converts the 16-bit 565
+			// buffer to the desktop depth and the render buffer is fitted to the
+			// client area, aspect-preserved and pillar/letter-boxed in black.
 			//
 			HWND hwnd;
 			pddclip->GetHWnd(&hwnd);
@@ -1510,38 +1518,46 @@ rptr<CRaster> prasReadBMP(const char* str_bitmap_name, bool b_vid)
 			int off_x = (cli_w - dst_w) / 2;
 			int off_y = (cli_h - dst_h) / 2;
 
-			// The blit target is the primary, so work in screen coordinates.
-			POINT org = { 0, 0 };
-			::ClientToScreen(hwnd, &org);
-
-			// Clear the pillar/letter-box border strips only (never the image
-			// area), so they stay black without flashing.  All blits use a
-			// BOUNDED retry: bRestore() loops on any non-DD_OK result, so an
-			// unbounded loop would hang forever if a surface is persistently lost
-			// (e.g. during an Alt-Tab / focus change) - which froze the game.
-			#define BLIT_RETRY(expr) { int _n = 0; while (_n++ < 16 && bRestore(expr)); }
-			CDDSize<DDBLTFX> ddbltfx;
-			ddbltfx.dwFillColor = 0;
-			RECT rc_bar;
-			if (off_x > 0)
+			// Mark the whole client area for repaint (no erase) and service the
+			// paint here so the present goes through the DWM-composited paint path.
+			::InvalidateRect(hwnd, NULL, FALSE);
+			PAINTSTRUCT ps;
+			HDC hdc_win = ::BeginPaint(hwnd, &ps);
+			if (hdc_win)
 			{
-				SetRect(&rc_bar, org.x, org.y, org.x + off_x, org.y + cli_h);
-				BLIT_RETRY(pddsPrimary->Blt(&rc_bar, NULL, NULL, DDBLT_COLORFILL | DDBLT_WAIT, &ddbltfx));
-				SetRect(&rc_bar, org.x + off_x + dst_w, org.y, org.x + cli_w, org.y + cli_h);
-				BLIT_RETRY(pddsPrimary->Blt(&rc_bar, NULL, NULL, DDBLT_COLORFILL | DDBLT_WAIT, &ddbltfx));
-			}
-			if (off_y > 0)
-			{
-				SetRect(&rc_bar, org.x, org.y, org.x + cli_w, org.y + off_y);
-				BLIT_RETRY(pddsPrimary->Blt(&rc_bar, NULL, NULL, DDBLT_COLORFILL | DDBLT_WAIT, &ddbltfx));
-				SetRect(&rc_bar, org.x, org.y + off_y + dst_h, org.x + cli_w, org.y + cli_h);
-				BLIT_RETRY(pddsPrimary->Blt(&rc_bar, NULL, NULL, DDBLT_COLORFILL | DDBLT_WAIT, &ddbltfx));
-			}
+				HDC hdc_src = 0;
+				if (pddsDraw->GetDC(&hdc_src) == DD_OK)
+				{
+					// Black pillar/letter-box border strips (client coordinates).
+					HBRUSH hbr = (HBRUSH)::GetStockObject(BLACK_BRUSH);
+					RECT   rc_bar;
+					if (off_x > 0)
+					{
+						SetRect(&rc_bar, 0, 0, off_x, cli_h);             ::FillRect(hdc_win, &rc_bar, hbr);
+						SetRect(&rc_bar, off_x + dst_w, 0, cli_w, cli_h); ::FillRect(hdc_win, &rc_bar, hbr);
+					}
+					if (off_y > 0)
+					{
+						SetRect(&rc_bar, 0, 0, cli_w, off_y);             ::FillRect(hdc_win, &rc_bar, hbr);
+						SetRect(&rc_bar, 0, off_y + dst_h, cli_w, cli_h); ::FillRect(hdc_win, &rc_bar, hbr);
+					}
 
-			SetRect(&rc_dest, org.x + off_x, org.y + off_y,
-			                  org.x + off_x + dst_w, org.y + off_y + dst_h);
-			BLIT_RETRY(pddsPrimary->Blt(&rc_dest, pddsDraw, &rc_src, DDBLT_WAIT, NULL));
-			#undef BLIT_RETRY
+					if (dst_w == ren_w && dst_h == ren_h)
+					{
+						// 1:1 - no scaling (e.g. native-resolution render).
+						::BitBlt(hdc_win, off_x, off_y, dst_w, dst_h, hdc_src, 0, 0, SRCCOPY);
+					}
+					else
+					{
+						::SetStretchBltMode(hdc_win, COLORONCOLOR);
+						::StretchBlt(hdc_win, off_x, off_y, dst_w, dst_h,
+						             hdc_src, 0, 0, ren_w, ren_h, SRCCOPY);
+					}
+
+					pddsDraw->ReleaseDC(hdc_src);
+				}
+				::EndPaint(hwnd, &ps);
+			}
 		}
 		else
 		{

@@ -1361,16 +1361,14 @@ POINT GetCurrentClientSize()
         {
             int scr_h = GetSystemMetrics(SM_CYSCREEN);
 
-            // Render at a higher 4:3 resolution and let CRasterWin::Flip upscale
-            // it to the screen.  Cap the render HEIGHT at 768 (=> 1024x768): the
-            // emulated DirectDraw on modern Windows fails on very large offscreen
-            // surfaces (a full 1440x1080 back buffer creates but can't be
-            // blitted), whereas a smaller buffer that is stretched up to the
-            // screen - exactly what the old 640x480 path did - works reliably.
-            // 1024x768 is a classic, safe surface size and still ~2.5x sharper
-            // than 640x480.
-            if (scr_h > 768)
-                scr_h = 768;
+            // Render the in-game view at the screen's native height in 4:3, so
+            // CRasterWin::Flip presents it 1:1 vertically (crisp, no upscaling
+            // blur) and pillar-boxes the sides.  The present now goes through GDI
+            // (see Flip), so the old DirectDraw large-offscreen-surface limit no
+            // longer caps the render size.  Cap the height at 1080 so the
+            // single-threaded software rasterizer isn't buried on 4K+ displays.
+            if (scr_h > 1080)
+                scr_h = 1080;
 
             h = scr_h;
             w = h * 4 / 3;
