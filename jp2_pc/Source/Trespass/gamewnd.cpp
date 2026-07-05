@@ -669,7 +669,25 @@ void CGameWnd::OnKey(UINT vk, BOOL fDown, int cRepeat, UINT flags)
 				PlayerTeleportToNextLocation();
 			}
 		}
+		break;
 #endif
+
+		// DIAGNOSTIC: Ctrl+Shift+L cycles to the next game level, so all 8
+		// levels' textures can be streamed in and dumped in one session.
+		case 'L':
+			if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) &&
+			    (GetAsyncKeyState(VK_SHIFT)   & 0x8000))
+			{
+				static const char* s_apszLevels[] =
+				{
+					"be.scn", "jr.scn", "ij.scn", "lab.scn",
+					"it.scn", "as.scn", "as2.scn", "sum.scn"
+				};
+				static int s_i_level = 0;
+				wWorld.DeferredLoad(s_apszLevels[s_i_level % 8]);
+				s_i_level++;
+			}
+			break;
     }
 }
 

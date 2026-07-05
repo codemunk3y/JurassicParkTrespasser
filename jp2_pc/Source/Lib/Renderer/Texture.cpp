@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive. 1996
+ * Copyright ï¿½ DreamWorks Interactive. 1996
  *
  * Implementation of Texture.hpp
  *
@@ -460,6 +460,140 @@ void GrowBumpEdges(rptr<CRaster> pras_new);
 		erfLIGHT + erfLIGHT_SHADE + erfFOG + erfFOG_SHADE;
 
 	//*****************************************************************************************
+	// DIAGNOSTIC: export a texture's base raster to a 24-bit BMP under "tex_dump\".
+	// 8-bit paletted textures are decoded through their attached palette; 16-bit
+	// textures are decoded as 565.  De-duplicated by the texture's hash value.
+	static void DumpTextureToBMP(const CTexture* ptex, rptr<CRaster> pras)
+	{
+		// Only active when the environment variable TRESPASS_DUMP_TEX is set, so
+		// normal play does not write hundreds of MB of BMPs.  Set it (to anything)
+		// before launching to extract textures; use Ctrl+Shift+L in-game to cycle
+		// levels so every level's textures stream in.
+		static int s_i_enabled = -1;
+		if (s_i_enabled < 0)
+			s_i_enabled = GetEnvironmentVariableA("TRESPASS_DUMP_TEX", 0, 0) > 0 ? 1 : 0;
+		if (!s_i_enabled)
+			return;
+
+		if (!pras)
+			return;
+
+		int i_w   = pras->iWidth;
+		int i_h   = pras->iHeight;
+		int i_bpp = pras->iPixelBits;
+		if (i_w <= 0 || i_h <= 0 || (i_bpp != 8 && i_bpp != 16))
+			return;
+
+		static bool s_b_dir = false;
+		if (!s_b_dir)
+		{
+			CreateDirectoryA("tex_dump", 0);
+			s_b_dir = true;
+		}
+
+		const CPal* ppal = 0;
+		if (i_bpp == 8)
+		{
+			if (ptex->ppcePalClut)
+				ppal = ptex->ppcePalClut->ppalPalette;
+			if (!ppal)
+				return;
+		}
+
+		pras->Lock();
+		const uint8* pb_base = (const uint8*)pras->pSurface;
+		int          i_pitch = pras->iLineBytes();
+		if (!pb_base)
+		{
+			pras->Unlock();
+			return;
+		}
+
+		// Hash the actual pixel content (u4HashValue is not set yet at this
+		// point).  This gives each distinct texture a unique filename and makes
+		// identical textures - the same one used by many objects, or shared
+		// across levels - de-duplicate to a single file.
+		uint32 u4_hash = 2166136261u;					// FNV-1a
+		int    i_bytes_per_row = i_w * (i_bpp / 8);
+		for (int y = 0; y < i_h; ++y)
+		{
+			const uint8* pb = pb_base + y * i_pitch;
+			for (int b = 0; b < i_bytes_per_row; ++b)
+				u4_hash = (u4_hash ^ pb[b]) * 16777619u;
+		}
+
+		char sz_path[MAX_PATH];
+		wsprintfA(sz_path, "tex_dump\\%08lX_%dx%d_%dbpp.bmp",
+		          (unsigned long)u4_hash, i_w, i_h, i_bpp);
+
+		if (GetFileAttributesA(sz_path) != INVALID_FILE_ATTRIBUTES)
+		{
+			pras->Unlock();
+			return;
+		}
+
+		int i_rowbytes = (i_w * 3 + 3) & ~3;
+
+		BITMAPFILEHEADER bfh;
+		BITMAPINFOHEADER bih;
+		memset(&bfh, 0, sizeof(bfh));
+		memset(&bih, 0, sizeof(bih));
+		bfh.bfType        = 0x4D42;						// 'BM'
+		bfh.bfOffBits     = sizeof(bfh) + sizeof(bih);
+		bfh.bfSize        = bfh.bfOffBits + i_rowbytes * i_h;
+		bih.biSize        = sizeof(bih);
+		bih.biWidth       = i_w;
+		bih.biHeight      = i_h;							// bottom-up
+		bih.biPlanes      = 1;
+		bih.biBitCount    = 24;
+		bih.biCompression = BI_RGB;
+
+		FILE* f = fopen(sz_path, "wb");
+		if (f)
+		{
+			fwrite(&bfh, sizeof(bfh), 1, f);
+			fwrite(&bih, sizeof(bih), 1, f);
+
+			uint8* pb_row = new uint8[i_rowbytes];
+			for (int y = i_h - 1; y >= 0; --y)
+			{
+				memset(pb_row, 0, i_rowbytes);
+				const uint8* pb_src = pb_base + y * i_pitch;
+				for (int x = 0; x < i_w; ++x)
+				{
+					uint8 u1r, u1g, u1b;
+					if (i_bpp == 8)
+					{
+						uint u_idx = pb_src[x];
+						if (u_idx < ppal->aclrPalette.size())
+						{
+							const CColour& clr = ppal->aclrPalette[u_idx];
+							u1r = clr.u1Red; u1g = clr.u1Green; u1b = clr.u1Blue;
+						}
+						else
+							u1r = u1g = u1b = 0;
+					}
+					else
+					{
+						uint16 u2 = *(const uint16*)(pb_src + x * 2);
+						u1r = (uint8)(((u2 >> 11) & 0x1F) << 3);
+						u1g = (uint8)(((u2 >>  5) & 0x3F) << 2);
+						u1b = (uint8)(( u2        & 0x1F) << 3);
+					}
+					pb_row[x * 3 + 0] = u1b;
+					pb_row[x * 3 + 1] = u1g;
+					pb_row[x * 3 + 2] = u1r;
+				}
+				fwrite(pb_row, i_rowbytes, 1, f);
+			}
+			delete[] pb_row;
+			fclose(f);
+		}
+
+		pras->Unlock();
+	}
+
+	//*****************************************************************************************
 	// Default constructor.
 	CTexture::CTexture()
 	{
@@ -500,6 +634,10 @@ void GrowBumpEdges(rptr<CRaster> pras_new);
 		// Attach the texture as a single mip level.
 		//
 		Assert(aprasTextures.uLen == 0);
+
+		// DIAGNOSTIC: export every image texture as a BMP under tex_dump\.
+		DumpTextureToBMP(this, pras);
+
 		aprasTextures << pras;
 
 		// Set the texture features.

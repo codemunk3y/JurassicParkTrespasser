@@ -17,3 +17,10 @@ jp2_pc/Build/
 
 #OpenTrespasser
 jp2_pc/Build/*
+
+# Extracted texture dumps (large; regenerate with TRESPASS_DUMP_TEX - see
+# texture_export/README.md, which is kept).
+texture_export/*
+!texture_export/README.md
+tex_dump/
+texture_sizes.txt
