@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive. 1997
+ * Copyright ï¿½ DreamWorks Interactive. 1997
  *
  * Implementation of texture manager
  *
@@ -326,9 +326,14 @@ rptr<CRaster> CTextureManager::prasPackTexture
 
 	if ( (pras_src->iWidth>256) || (pras_src->iHeight>256) )
 	{
+		// A >256 texture that is already flagged non-tiling (e.g. an injected
+		// hi-res / upscaled texture) is used as-is: the clamped rasteriser path
+		// has no 256 limit.  This bypasses the "too big to pack" reject below.
+		if (!b_curved && pras_src->bNotTileable)
+			return pras_src;
 
 		// the source texture is bigger than a pack surface therefore it cannot be packed.
-		conLoadLog.Print("  Texture/Bump too big to pack: w=%d, h=%d\n", 
+		conLoadLog.Print("  Texture/Bump too big to pack: w=%d, h=%d\n",
 							pras_src->iWidth, 
 							pras_src->iHeight);
 

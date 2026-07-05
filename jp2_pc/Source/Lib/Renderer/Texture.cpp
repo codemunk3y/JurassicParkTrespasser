@@ -594,6 +594,70 @@ void GrowBumpEdges(rptr<CRaster> pras_new);
 	}
 
 	//*****************************************************************************************
+	// HI-RES side-load: load an AI-upscaled 24-bit BMP into a non-tiling 16-bit
+	// raster (RGB -> screen 565/555), or rptr0 if absent/unusable.
+	static rptr<CRaster> prasLoadHiResTex(const char* psz_path, CPixelFormat* ppxf)
+	{
+		FILE* f = fopen(psz_path, "rb");
+		if (!f)
+			return rptr0;
+
+		BITMAPFILEHEADER bfh;
+		BITMAPINFOHEADER bih;
+		if (fread(&bfh, sizeof(bfh), 1, f) != 1 ||
+		    fread(&bih, sizeof(bih), 1, f) != 1 ||
+		    bfh.bfType != 0x4D42 || bih.biBitCount != 24)
+		{
+			fclose(f);
+			return rptr0;
+		}
+
+		int  i_w       = bih.biWidth;
+		int  i_h       = bih.biHeight < 0 ? -bih.biHeight : bih.biHeight;
+		bool b_topdown = bih.biHeight < 0;
+		if (i_w <= 0 || i_h <= 0 || i_w > 2048 || i_h > 2048)
+		{
+			fclose(f);
+			return rptr0;
+		}
+
+		bool b_565 = (ppxf == 0) || (ppxf->cposG.u1WidthDiff != 3);
+
+		rptr<CRasterMem> pras = rptr_new CRasterMem(i_w, i_h, 16, 0, ppxf, emtTexManVirtual);
+		pras->bNotTileable = true;
+
+		pras->Lock();
+		uint16* pb_dst    = (uint16*)pras->pAddress(0);
+		int     i_dstride = pras->iLineBytes() / 2;
+		int     i_rowbytes = (i_w * 3 + 3) & ~3;
+		uint8*  pb_row    = new uint8[i_rowbytes];
+		fseek(f, bfh.bfOffBits, SEEK_SET);
+		for (int i = 0; i < i_h; ++i)
+		{
+			if (fread(pb_row, i_rowbytes, 1, f) != 1)
+				break;
+			int     y    = b_topdown ? i : (i_h - 1 - i);
+			uint16* drow = pb_dst + y * i_dstride;
+			for (int x = 0; x < i_w; ++x)
+			{
+				int b = pb_row[x * 3 + 0];
+				int g = pb_row[x * 3 + 1];
+				int r = pb_row[x * 3 + 2];
+				if (b_565)
+					drow[x] = (uint16)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+				else
+					drow[x] = (uint16)(((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3));
+			}
+		}
+		delete[] pb_row;
+		pras->Unlock();
+		fclose(f);
+
+		OutputDebugString(">>> HIRES: injected upscaled texture\n");
+		return rptr_cast(CRaster, pras);
+	}
+
+	//*****************************************************************************************
 	// Default constructor.
 	CTexture::CTexture()
 	{
@@ -638,7 +702,44 @@ void GrowBumpEdges(rptr<CRaster> pras_new);
 		// DIAGNOSTIC: export every image texture as a BMP under tex_dump\.
 		DumpTextureToBMP(this, pras);
 
-		aprasTextures << pras;
+		// HI-RES SIDE-LOAD (EXPERIMENTAL, env TRESPASS_HIRES): every texture passes
+		// through here (unlike the packer), so this is where an AI-upscaled version
+		// is injected.  Match a 16-bit texture by content hash (same FNV-1a used to
+		// name the exported BMPs); if hires\<hash>.bmp exists, attach it (a >256
+		// non-tiling raster) instead.  Only NON-tiling (unique-per-surface) textures
+		// are replaced - tiling textures need the 256-capped tiling path, and a 512
+		// non-tiling replacement makes them repeat/smear.  Terrain still uses its own
+		// texturing subsystem, whose fixed-size page compositing this breaks, so
+		// terrain surfaces show artifacts - a known limitation of this experiment.
+		static int s_i_hires = -1;
+		if (s_i_hires < 0)
+			s_i_hires = GetEnvironmentVariableA("TRESPASS_HIRES", 0, 0) > 0 ? 1 : 0;
+
+		rptr<CRaster> pras_attach = pras;
+		if (s_i_hires && pras && pras->iPixelBits == 16 &&
+		    pras->iWidth == 256 && pras->iHeight == 256 && pras->bNotTileable)
+		{
+			pras->Lock();
+			uint32 u4_hash  = 2166136261u;
+			int    i_bpr    = pras->iWidth * 2;
+			int    i_pitch  = pras->iLineBytes();
+			const uint8* pb = (const uint8*)pras->pAddress(0);
+			for (int y = 0; y < pras->iHeight; ++y)
+			{
+				const uint8* row = pb + y * i_pitch;
+				for (int b = 0; b < i_bpr; ++b)
+					u4_hash = (u4_hash ^ row[b]) * 16777619u;
+			}
+			pras->Unlock();
+
+			char sz_path[MAX_PATH];
+			wsprintfA(sz_path, "hires\\%08lX.bmp", (unsigned long)u4_hash);
+			rptr<CRaster> pras_hi = prasLoadHiResTex(sz_path, &pras->pxf);
+			if (pras_hi)
+				pras_attach = pras_hi;
+		}
+
+		aprasTextures << pras_attach;
 
 		// Set the texture features.
 		UpdateFeatures();
