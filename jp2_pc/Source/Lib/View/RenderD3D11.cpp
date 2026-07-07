@@ -5,27 +5,23 @@
  * Implementation of RenderD3D11.hpp.
  *
  * SLICE 1 (done): D3D11 device + DXGI swap chain on the game window, clear + present.
+ * SLICE 2a (done): passthrough VS + flat PS, dynamic vertex buffer, fan-triangulated stream.
  *
- * SLICE 2a (this file, current): passthrough vertex shader + flat pixel shader, a dynamic
- * vertex buffer, and a real SubmitPolygon that fan-triangulates the engine's screen-space
- * polygon stream.  Each polygon is drawn FLAT-shaded in its texture's representative colour
- * (CTexture::d3dpixColour) - no texture sampling yet.  Polygons arrive already depth-sorted
- * (back-to-front) from the software pipeline, so we draw them in order with no depth buffer;
- * painter's-order compositing matches the software renderer.  This validates the vertex
- * buffer, input layout, screen->clip transform and draw path before textures/perspective.
- *
- * SLICE 2b (next): reconstruct w = 1/rhw in the VS for perspective-correct UV, sample the
- * texture in the PS (texture upload + SRV cache), and add a depth buffer so the software
- * depth sort can eventually be dropped.
+ * SLICE 2b (this file, current): perspective-correct UV (reconstruct w = 1/rhw in the VS),
+ * texture upload + SRV cache (caller supplies BGRA + a CTexture key), textured pixel shader,
+ * a linear/wrap sampler, and batching by texture.  Untextured polygons bind a 1x1 white
+ * texture so their flat vertex colour shows through the same shader.  Still no depth buffer:
+ * polygons arrive depth-sorted, so painter's order matches the software renderer.  (Depth
+ * buffer + dropping the software sort is the next step.)
  *
  **********************************************************************************************/
 
-// Modern Windows SDK Direct3D 11, NOT the 1998 DirectX headers in Inc/DirectX.
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi.h>
 #include <d3dcompiler.h>
 #include <vector>
+#include <unordered_map>
 
 #include "RenderD3D11.hpp"
 
@@ -35,73 +31,81 @@
 
 namespace
 {
-	// ---- Device / swap chain (slice 1) --------------------------------------------------
+	// ---- Device / swap chain ------------------------------------------------------------
 	HWND                     s_hwnd           = 0;
 	ID3D11Device*            s_pd3dDevice     = 0;
 	ID3D11DeviceContext*     s_pd3dContext    = 0;
 	IDXGISwapChain*          s_pSwapChain     = 0;
 	ID3D11RenderTargetView*  s_pBackBufferRTV = 0;
 
-	// ---- Pipeline (slice 2a) ------------------------------------------------------------
+	// ---- Pipeline -----------------------------------------------------------------------
 	ID3D11VertexShader*      s_pVS            = 0;
 	ID3D11PixelShader*       s_pPS            = 0;
 	ID3D11InputLayout*       s_pLayout        = 0;
-	ID3D11Buffer*            s_pVB            = 0;	// dynamic vertex buffer
-	ID3D11Buffer*            s_pCB            = 0;	// view-params constant buffer
+	ID3D11Buffer*            s_pVB            = 0;
+	ID3D11Buffer*            s_pCB            = 0;
 	ID3D11RasterizerState*   s_pRaster        = 0;
-	UINT                     s_vb_capacity    = 0;	// s_pVB size in vertices
+	ID3D11SamplerState*      s_pSampWrap      = 0;	// tiling textures
+	ID3D11SamplerState*      s_pSampClamp     = 0;	// non-tileable textures
+	ID3D11BlendState*        s_pBlend         = 0;	// alpha blend (colour-key + translucency)
+	ID3D11ShaderResourceView* s_pWhiteSRV     = 0;	// 1x1 white for untextured polys
+	UINT                     s_vb_capacity    = 0;
 
 	int   s_i_enabled    = -1;
 	bool  s_b_init_tried = false;
-	bool  s_b_active     = false;	// device + swap chain live
-	bool  s_b_pipeline   = false;	// shaders/layout/state built
+	bool  s_b_active     = false;
+	bool  s_b_pipeline   = false;
 
-	UINT  s_u_width      = 0;		// swap-chain back-buffer size
+	UINT  s_u_width      = 0;
 	UINT  s_u_height     = 0;
 
-	// CPU-side accumulator for this frame's triangles (expanded from fans).
+	// This frame's triangles, expanded from fans, and one draw batch per texture run.
 	std::vector<RenderD3D11::SVert> s_verts;
+	struct SBatch { ID3D11ShaderResourceView* pSRV; UINT u_start; UINT u_count; bool b_clamp; };
+	std::vector<SBatch> s_batches;
 
-	// Passthrough VS: screen pixels -> clip space.  gViewParams = (2/renderW, 2/renderH).
-	// Slice 2a uses a flat depth of 0.5 and w = 1 (no perspective yet - polys are already
-	// sorted, so painter's order suffices, and flat colour needs no perspective-correct
-	// interpolation).  Slice 2b will reconstruct w = 1/rhw here for correct UVs.
+	// CTexture* -> SRV.  Textures are largely persistent, so a plain grow-only cache is fine.
+	std::unordered_map<const void*, ID3D11ShaderResourceView*> s_tex_cache;
+
+	// VS: screen pixels -> clip space, reconstructing w = 1/rhw so UV/colour interpolate
+	// perspective-correctly.  gViewParams = (2/renderW, 2/renderH).  Flat depth 0.5 (no
+	// depth buffer yet; painter's order from the sorted input).
 	const char* k_psz_vs =
 		"cbuffer CbView : register(b0) { float4 gViewParams; }\n"
 		"struct VSIn  { float4 sr : POSITION; float4 col : COLOR0; float2 uv : TEXCOORD0; };\n"
 		"struct VSOut { float4 pos : SV_Position; float4 col : COLOR0; float2 uv : TEXCOORD0; };\n"
 		"VSOut main(VSIn i) {\n"
-		"  VSOut o;\n"
+		"  float w = 1.0 / max(i.sr.w, 1e-6);\n"          // sr.w = rhw = 1/z
 		"  float ndcx = i.sr.x * gViewParams.x - 1.0;\n"
 		"  float ndcy = 1.0 - i.sr.y * gViewParams.y;\n"
-		"  o.pos = float4(ndcx, ndcy, 0.5, 1.0);\n"
+		"  VSOut o;\n"
+		"  o.pos = float4(ndcx * w, ndcy * w, 0.5 * w, w);\n"
 		"  o.col = i.col;\n"
 		"  o.uv  = i.uv;\n"
 		"  return o;\n"
 		"}\n";
 
+	// PS: sample the texture, modulate by the (flat) vertex colour.
 	const char* k_psz_ps =
+		"Texture2D    gTex : register(t0);\n"
+		"SamplerState gSmp : register(s0);\n"
 		"struct VSOut { float4 pos : SV_Position; float4 col : COLOR0; float2 uv : TEXCOORD0; };\n"
-		"float4 main(VSOut i) : SV_Target { return i.col; }\n";
+		"float4 main(VSOut i) : SV_Target { return gTex.Sample(gSmp, i.uv) * i.col; }\n";
 
-	inline void Log(const char* psz)  { OutputDebugStringA(psz); }
+	inline void Log(const char* psz) { OutputDebugStringA(psz); }
 
-	void Shutdown_Internal();		// forward decl
+	void Shutdown_Internal();
 
-	// Create the device + swap chain, sized to the window client rect.  (Slice 1.)
 	void TryInit()
 	{
 		s_b_init_tried = true;
-
 		if (!s_hwnd) { Log("TRESPASS_D3D11: no window set\n"); return; }
 
-		RECT rc;
-		GetClientRect(s_hwnd, &rc);
+		RECT rc; GetClientRect(s_hwnd, &rc);
 		UINT u_w = rc.right - rc.left, u_h = rc.bottom - rc.top;
 		if (u_w < 8 || u_h < 8) { s_b_init_tried = false; return; }
 
-		DXGI_SWAP_CHAIN_DESC scd;
-		ZeroMemory(&scd, sizeof(scd));
+		DXGI_SWAP_CHAIN_DESC scd; ZeroMemory(&scd, sizeof(scd));
 		scd.BufferCount        = 1;
 		scd.BufferDesc.Width   = u_w;
 		scd.BufferDesc.Height  = u_h;
@@ -114,7 +118,6 @@ namespace
 
 		D3D_FEATURE_LEVEL fl_got;
 		const D3D_FEATURE_LEVEL afl[] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0 };
-
 		HRESULT hr = D3D11CreateDeviceAndSwapChain(
 			0, D3D_DRIVER_TYPE_HARDWARE, 0, 0,
 			afl, (UINT)(sizeof(afl) / sizeof(afl[0])), D3D11_SDK_VERSION,
@@ -133,75 +136,104 @@ namespace
 		Log("TRESPASS_D3D11: device + swap chain created\n");
 	}
 
-	// Compile shaders and create layout / constant buffer / raster state.  (Slice 2a.)
+	// Create a 1x1 white texture + SRV (bound for untextured polygons).
+	ID3D11ShaderResourceView* CreateSRVFromBGRA(int i_w, int i_h, const unsigned int* pu4)
+	{
+		D3D11_TEXTURE2D_DESC td; ZeroMemory(&td, sizeof(td));
+		td.Width = i_w; td.Height = i_h; td.MipLevels = 1; td.ArraySize = 1;
+		td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+		td.SampleDesc.Count = 1;
+		td.Usage = D3D11_USAGE_IMMUTABLE;
+		td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+		D3D11_SUBRESOURCE_DATA sd; ZeroMemory(&sd, sizeof(sd));
+		sd.pSysMem = pu4;
+		sd.SysMemPitch = i_w * 4;
+
+		ID3D11Texture2D* p_tex = 0;
+		if (FAILED(s_pd3dDevice->CreateTexture2D(&td, &sd, &p_tex)) || !p_tex)
+			return 0;
+		ID3D11ShaderResourceView* p_srv = 0;
+		HRESULT hr = s_pd3dDevice->CreateShaderResourceView(p_tex, 0, &p_srv);
+		p_tex->Release();
+		return SUCCEEDED(hr) ? p_srv : 0;
+	}
+
 	void TryBuildPipeline()
 	{
-		s_b_pipeline = true;		// only attempt once
+		s_b_pipeline = true;
 
-		ID3DBlob* p_vsblob = 0; ID3DBlob* p_psblob = 0; ID3DBlob* p_err = 0;
+		ID3DBlob* p_vs = 0; ID3DBlob* p_ps = 0; ID3DBlob* p_err = 0;
 
-		HRESULT hr = D3DCompile(k_psz_vs, strlen(k_psz_vs), "vs", 0, 0, "main", "vs_4_0", 0, 0, &p_vsblob, &p_err);
+		HRESULT hr = D3DCompile(k_psz_vs, strlen(k_psz_vs), "vs", 0, 0, "main", "vs_4_0", 0, 0, &p_vs, &p_err);
 		if (FAILED(hr)) { Log("TRESPASS_D3D11: VS compile FAILED\n"); if (p_err) { Log((const char*)p_err->GetBufferPointer()); p_err->Release(); } return; }
 		if (p_err) { p_err->Release(); p_err = 0; }
 
-		hr = D3DCompile(k_psz_ps, strlen(k_psz_ps), "ps", 0, 0, "main", "ps_4_0", 0, 0, &p_psblob, &p_err);
-		if (FAILED(hr)) { Log("TRESPASS_D3D11: PS compile FAILED\n"); if (p_err) { Log((const char*)p_err->GetBufferPointer()); p_err->Release(); } p_vsblob->Release(); return; }
+		hr = D3DCompile(k_psz_ps, strlen(k_psz_ps), "ps", 0, 0, "main", "ps_4_0", 0, 0, &p_ps, &p_err);
+		if (FAILED(hr)) { Log("TRESPASS_D3D11: PS compile FAILED\n"); if (p_err) { Log((const char*)p_err->GetBufferPointer()); p_err->Release(); } p_vs->Release(); return; }
 		if (p_err) { p_err->Release(); p_err = 0; }
 
-		hr = s_pd3dDevice->CreateVertexShader(p_vsblob->GetBufferPointer(), p_vsblob->GetBufferSize(), 0, &s_pVS);
-		if (FAILED(hr)) { Log("TRESPASS_D3D11: CreateVertexShader FAILED\n"); p_vsblob->Release(); p_psblob->Release(); return; }
-		hr = s_pd3dDevice->CreatePixelShader(p_psblob->GetBufferPointer(), p_psblob->GetBufferSize(), 0, &s_pPS);
-		p_psblob->Release();
-		if (FAILED(hr)) { Log("TRESPASS_D3D11: CreatePixelShader FAILED\n"); p_vsblob->Release(); return; }
+		if (FAILED(s_pd3dDevice->CreateVertexShader(p_vs->GetBufferPointer(), p_vs->GetBufferSize(), 0, &s_pVS))) { Log("TRESPASS_D3D11: CreateVertexShader FAILED\n"); p_vs->Release(); p_ps->Release(); return; }
+		if (FAILED(s_pd3dDevice->CreatePixelShader(p_ps->GetBufferPointer(), p_ps->GetBufferSize(), 0, &s_pPS)))  { Log("TRESPASS_D3D11: CreatePixelShader FAILED\n");  p_ps->Release(); p_vs->Release(); return; }
+		p_ps->Release();
 
-		// Input layout matches SVert: pos+rhw (16B), BGRA colour (4B), uv (8B) = 28B.
 		D3D11_INPUT_ELEMENT_DESC a_elem[] =
 		{
 			{ "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0,  0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
 			{ "COLOR",    0, DXGI_FORMAT_B8G8R8A8_UNORM,     0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0 },
 			{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 20, D3D11_INPUT_PER_VERTEX_DATA, 0 },
 		};
-		hr = s_pd3dDevice->CreateInputLayout(a_elem, 3, p_vsblob->GetBufferPointer(), p_vsblob->GetBufferSize(), &s_pLayout);
-		p_vsblob->Release();
+		hr = s_pd3dDevice->CreateInputLayout(a_elem, 3, p_vs->GetBufferPointer(), p_vs->GetBufferSize(), &s_pLayout);
+		p_vs->Release();
 		if (FAILED(hr)) { Log("TRESPASS_D3D11: CreateInputLayout FAILED\n"); return; }
 
-		// Constant buffer: float4 view params.
 		D3D11_BUFFER_DESC cbd; ZeroMemory(&cbd, sizeof(cbd));
-		cbd.ByteWidth      = 16;
-		cbd.Usage          = D3D11_USAGE_DYNAMIC;
-		cbd.BindFlags      = D3D11_BIND_CONSTANT_BUFFER;
-		cbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-		hr = s_pd3dDevice->CreateBuffer(&cbd, 0, &s_pCB);
-		if (FAILED(hr)) { Log("TRESPASS_D3D11: CreateBuffer(cb) FAILED\n"); return; }
+		cbd.ByteWidth = 16; cbd.Usage = D3D11_USAGE_DYNAMIC;
+		cbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER; cbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+		if (FAILED(s_pd3dDevice->CreateBuffer(&cbd, 0, &s_pCB))) { Log("TRESPASS_D3D11: CreateBuffer(cb) FAILED\n"); return; }
 
-		// Raster state: no back-face culling (the pipeline already culled), solid fill.
 		D3D11_RASTERIZER_DESC rd; ZeroMemory(&rd, sizeof(rd));
-		rd.FillMode = D3D11_FILL_SOLID;
-		rd.CullMode = D3D11_CULL_NONE;
-		rd.DepthClipEnable = TRUE;
-		hr = s_pd3dDevice->CreateRasterizerState(&rd, &s_pRaster);
-		if (FAILED(hr)) { Log("TRESPASS_D3D11: CreateRasterizerState FAILED\n"); return; }
+		rd.FillMode = D3D11_FILL_SOLID; rd.CullMode = D3D11_CULL_NONE; rd.DepthClipEnable = TRUE;
+		if (FAILED(s_pd3dDevice->CreateRasterizerState(&rd, &s_pRaster))) { Log("TRESPASS_D3D11: CreateRasterizerState FAILED\n"); return; }
 
-		Log("TRESPASS_D3D11: pipeline built (slice 2a: flat-shaded geometry)\n");
+		D3D11_SAMPLER_DESC smp; ZeroMemory(&smp, sizeof(smp));
+		smp.Filter   = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+		smp.AddressU = smp.AddressV = smp.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+		smp.MaxLOD   = D3D11_FLOAT32_MAX;
+		if (FAILED(s_pd3dDevice->CreateSamplerState(&smp, &s_pSampWrap))) { Log("TRESPASS_D3D11: CreateSamplerState(wrap) FAILED\n"); return; }
+		smp.AddressU = smp.AddressV = smp.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+		if (FAILED(s_pd3dDevice->CreateSamplerState(&smp, &s_pSampClamp))) { Log("TRESPASS_D3D11: CreateSamplerState(clamp) FAILED\n"); return; }
+
+		// Alpha blend: colour-key transparency (texel 0 -> alpha 0) and future translucency.
+		// Polygons arrive back-to-front sorted, so blending in submit order is correct.
+		D3D11_BLEND_DESC bld; ZeroMemory(&bld, sizeof(bld));
+		bld.RenderTarget[0].BlendEnable           = TRUE;
+		bld.RenderTarget[0].SrcBlend              = D3D11_BLEND_ONE;			// premultiplied alpha:
+		bld.RenderTarget[0].DestBlend             = D3D11_BLEND_INV_SRC_ALPHA;	// no dark edge halo
+		bld.RenderTarget[0].BlendOp               = D3D11_BLEND_OP_ADD;
+		bld.RenderTarget[0].SrcBlendAlpha         = D3D11_BLEND_ONE;
+		bld.RenderTarget[0].DestBlendAlpha        = D3D11_BLEND_ZERO;
+		bld.RenderTarget[0].BlendOpAlpha          = D3D11_BLEND_OP_ADD;
+		bld.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+		if (FAILED(s_pd3dDevice->CreateBlendState(&bld, &s_pBlend))) { Log("TRESPASS_D3D11: CreateBlendState FAILED\n"); return; }
+
+		const unsigned int u_white = 0xFFFFFFFF;
+		s_pWhiteSRV = CreateSRVFromBGRA(1, 1, &u_white);
+		if (!s_pWhiteSRV) { Log("TRESPASS_D3D11: white texture FAILED\n"); return; }
+
+		Log("TRESPASS_D3D11: pipeline built (slice 2b: textured)\n");
 	}
 
-	// Ensure the dynamic vertex buffer holds at least u_needed vertices.
 	bool bEnsureVB(UINT u_needed)
 	{
-		if (s_pVB && s_vb_capacity >= u_needed)
-			return true;
+		if (s_pVB && s_vb_capacity >= u_needed) return true;
 		if (s_pVB) { s_pVB->Release(); s_pVB = 0; }
-
 		UINT u_cap = s_vb_capacity ? s_vb_capacity : 8192;
 		while (u_cap < u_needed) u_cap *= 2;
-
 		D3D11_BUFFER_DESC bd; ZeroMemory(&bd, sizeof(bd));
-		bd.ByteWidth      = u_cap * sizeof(RenderD3D11::SVert);
-		bd.Usage          = D3D11_USAGE_DYNAMIC;
-		bd.BindFlags      = D3D11_BIND_VERTEX_BUFFER;
-		bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-		HRESULT hr = s_pd3dDevice->CreateBuffer(&bd, 0, &s_pVB);
-		if (FAILED(hr)) { Log("TRESPASS_D3D11: CreateBuffer(vb) FAILED\n"); s_vb_capacity = 0; return false; }
+		bd.ByteWidth = u_cap * sizeof(RenderD3D11::SVert);
+		bd.Usage = D3D11_USAGE_DYNAMIC; bd.BindFlags = D3D11_BIND_VERTEX_BUFFER; bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+		if (FAILED(s_pd3dDevice->CreateBuffer(&bd, 0, &s_pVB))) { Log("TRESPASS_D3D11: CreateBuffer(vb) FAILED\n"); s_vb_capacity = 0; return false; }
 		s_vb_capacity = u_cap;
 		return true;
 	}
@@ -209,6 +241,13 @@ namespace
 	void Shutdown_Internal()
 	{
 		if (s_pd3dContext) s_pd3dContext->ClearState();
+		for (std::unordered_map<const void*, ID3D11ShaderResourceView*>::iterator it = s_tex_cache.begin(); it != s_tex_cache.end(); ++it)
+			if (it->second) it->second->Release();
+		s_tex_cache.clear();
+		if (s_pWhiteSRV)      { s_pWhiteSRV->Release();      s_pWhiteSRV      = 0; }
+		if (s_pBlend)         { s_pBlend->Release();         s_pBlend         = 0; }
+		if (s_pSampClamp)     { s_pSampClamp->Release();     s_pSampClamp     = 0; }
+		if (s_pSampWrap)      { s_pSampWrap->Release();      s_pSampWrap      = 0; }
 		if (s_pRaster)        { s_pRaster->Release();        s_pRaster        = 0; }
 		if (s_pCB)            { s_pCB->Release();            s_pCB            = 0; }
 		if (s_pVB)            { s_pVB->Release();            s_pVB            = 0; }
@@ -219,9 +258,7 @@ namespace
 		if (s_pSwapChain)     { s_pSwapChain->Release();     s_pSwapChain     = 0; }
 		if (s_pd3dContext)    { s_pd3dContext->Release();    s_pd3dContext    = 0; }
 		if (s_pd3dDevice)     { s_pd3dDevice->Release();     s_pd3dDevice     = 0; }
-		s_vb_capacity = 0;
-		s_b_active = false;
-		s_b_pipeline = false;
+		s_vb_capacity = 0; s_b_active = false; s_b_pipeline = false;
 	}
 }
 
@@ -242,67 +279,85 @@ namespace RenderD3D11
 		s_hwnd = (HWND)p_hwnd;
 	}
 
+	void* GetTexture(const void* p_key)
+	{
+		std::unordered_map<const void*, ID3D11ShaderResourceView*>::iterator it = s_tex_cache.find(p_key);
+		return it != s_tex_cache.end() ? (void*)it->second : 0;
+	}
+
+	void* CreateTexture(const void* p_key, int i_width, int i_height, const unsigned int* pu4_bgra)
+	{
+		if (!s_pd3dDevice || i_width < 1 || i_height < 1) return 0;
+		ID3D11ShaderResourceView* p_srv = CreateSRVFromBGRA(i_width, i_height, pu4_bgra);
+		s_tex_cache[p_key] = p_srv;		// cache even null, so we don't retry a bad texture every frame
+		return (void*)p_srv;
+	}
+
 	bool bBeginFrame(int i_width, int i_height)
 	{
 		if (!bEnabled()) return false;
-
 		if (!s_b_init_tried) TryInit();
 		if (!s_b_active)     return false;
 		if (!s_b_pipeline)   TryBuildPipeline();
-		if (!s_pVS || !s_pPS || !s_pLayout || !s_pCB || !s_pRaster)
+		if (!s_pVS || !s_pPS || !s_pLayout || !s_pCB || !s_pRaster ||
+		    !s_pSampWrap || !s_pSampClamp || !s_pBlend || !s_pWhiteSRV)
 			return false;
 
 		s_verts.clear();
+		s_batches.clear();
 
 		s_pd3dContext->OMSetRenderTargets(1, &s_pBackBufferRTV, 0);
 
-		// Aspect-correct viewport: the engine renders 4:3 (i_width x i_height) but the
-		// swap chain matches the window (often 16:9), so fit the render inside the back
-		// buffer preserving aspect and centre it (pillar/letter-box).
+		const float af_blend[4] = { 0, 0, 0, 0 };
+		s_pd3dContext->OMSetBlendState(s_pBlend, af_blend, 0xFFFFFFFF);
+
 		float f_scale = (float)s_u_width / (float)i_width;
 		float f_sh    = (float)s_u_height / (float)i_height;
 		if (f_sh < f_scale) f_scale = f_sh;
 
 		D3D11_VIEWPORT vp;
-		vp.Width    = i_width  * f_scale;
-		vp.Height   = i_height * f_scale;
-		vp.TopLeftX = (s_u_width  - vp.Width)  * 0.5f;
-		vp.TopLeftY = (s_u_height - vp.Height) * 0.5f;
-		vp.MinDepth = 0.0f;
-		vp.MaxDepth = 1.0f;
+		vp.Width  = i_width * f_scale; vp.Height = i_height * f_scale;
+		vp.TopLeftX = (s_u_width - vp.Width) * 0.5f; vp.TopLeftY = (s_u_height - vp.Height) * 0.5f;
+		vp.MinDepth = 0.0f; vp.MaxDepth = 1.0f;
 		s_pd3dContext->RSSetViewports(1, &vp);
 		s_pd3dContext->RSSetState(s_pRaster);
 
-		// Clear the whole back buffer (teal shows in the pillar-box bars).
 		const float af_clear[4] = { 0.10f, 0.35f, 0.45f, 1.0f };
 		s_pd3dContext->ClearRenderTargetView(s_pBackBufferRTV, af_clear);
 
-		// Update view params (2/renderW, 2/renderH) for the screen->clip transform.
 		D3D11_MAPPED_SUBRESOURCE ms;
 		if (SUCCEEDED(s_pd3dContext->Map(s_pCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms)))
 		{
 			float* pf = (float*)ms.pData;
-			pf[0] = 2.0f / (float)i_width;
-			pf[1] = 2.0f / (float)i_height;
-			pf[2] = 0.0f;
-			pf[3] = 0.0f;
+			pf[0] = 2.0f / (float)i_width; pf[1] = 2.0f / (float)i_height; pf[2] = 0.0f; pf[3] = 0.0f;
 			s_pd3dContext->Unmap(s_pCB, 0);
 		}
 		return true;
 	}
 
-	void SubmitPolygon(const SVert* pav_verts, int i_count, void* p_texture)
+	void SubmitPolygon(const SVert* pav_verts, int i_count, void* p_texture, bool b_clamp)
 	{
-		(void)p_texture;		// slice 2b
 		if (i_count < 3) return;
 
-		// Fan (v0, v1, ... vn-1) -> triangle list (v0, vk-1, vk), matching the engine's
-		// own polygon triangulation.
+		ID3D11ShaderResourceView* p_srv = p_texture ? (ID3D11ShaderResourceView*)p_texture : s_pWhiteSRV;
+		UINT u_before = (UINT)s_verts.size();
+
 		for (int k = 2; k < i_count; ++k)
 		{
 			s_verts.push_back(pav_verts[0]);
 			s_verts.push_back(pav_verts[k - 1]);
 			s_verts.push_back(pav_verts[k]);
+		}
+		UINT u_added = (UINT)s_verts.size() - u_before;
+		if (!u_added) return;
+
+		// Extend the current batch if it uses the same texture+sampler, else start a new one.
+		if (!s_batches.empty() && s_batches.back().pSRV == p_srv && s_batches.back().b_clamp == b_clamp)
+			s_batches.back().u_count += u_added;
+		else
+		{
+			SBatch b; b.pSRV = p_srv; b.u_start = u_before; b.u_count = u_added; b.b_clamp = b_clamp;
+			s_batches.push_back(b);
 		}
 	}
 
@@ -310,25 +365,28 @@ namespace RenderD3D11
 	{
 		if (!bActive() || !s_pSwapChain) return;
 
-		if (!s_verts.empty())
+		if (!s_verts.empty() && bEnsureVB((UINT)s_verts.size()))
 		{
-			UINT u_count = (UINT)s_verts.size();
-			if (bEnsureVB(u_count))
+			D3D11_MAPPED_SUBRESOURCE ms;
+			if (SUCCEEDED(s_pd3dContext->Map(s_pVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms)))
 			{
-				D3D11_MAPPED_SUBRESOURCE ms;
-				if (SUCCEEDED(s_pd3dContext->Map(s_pVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms)))
-				{
-					memcpy(ms.pData, &s_verts[0], u_count * sizeof(SVert));
-					s_pd3dContext->Unmap(s_pVB, 0);
+				memcpy(ms.pData, &s_verts[0], s_verts.size() * sizeof(SVert));
+				s_pd3dContext->Unmap(s_pVB, 0);
 
-					UINT u_stride = sizeof(SVert), u_offset = 0;
-					s_pd3dContext->IASetInputLayout(s_pLayout);
-					s_pd3dContext->IASetVertexBuffers(0, 1, &s_pVB, &u_stride, &u_offset);
-					s_pd3dContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-					s_pd3dContext->VSSetShader(s_pVS, 0, 0);
-					s_pd3dContext->VSSetConstantBuffers(0, 1, &s_pCB);
-					s_pd3dContext->PSSetShader(s_pPS, 0, 0);
-					s_pd3dContext->Draw(u_count, 0);
+				UINT u_stride = sizeof(SVert), u_offset = 0;
+				s_pd3dContext->IASetInputLayout(s_pLayout);
+				s_pd3dContext->IASetVertexBuffers(0, 1, &s_pVB, &u_stride, &u_offset);
+				s_pd3dContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+				s_pd3dContext->VSSetShader(s_pVS, 0, 0);
+				s_pd3dContext->VSSetConstantBuffers(0, 1, &s_pCB);
+				s_pd3dContext->PSSetShader(s_pPS, 0, 0);
+
+				for (size_t i = 0; i < s_batches.size(); ++i)
+				{
+					ID3D11SamplerState* p_samp = s_batches[i].b_clamp ? s_pSampClamp : s_pSampWrap;
+					s_pd3dContext->PSSetSamplers(0, 1, &p_samp);
+					s_pd3dContext->PSSetShaderResources(0, 1, &s_batches[i].pSRV);
+					s_pd3dContext->Draw(s_batches[i].u_count, s_batches[i].u_start);
 				}
 			}
 		}

@@ -141,7 +141,10 @@
 #include "Lib/Sys/Profile.hpp"
 #include "Lib/View/Raster.hpp"
 #include "Lib/View/Viewport.hpp"
+#include "Lib/View/Palette.hpp"
+#include "Lib/View/ColourBase.hpp"
 #include "Lib/View/RenderD3D11.hpp"
+#include <vector>
 #include "Lib/Sys/DebugConsole.hpp"
 #include "Lib/Renderer/LightBlend.hpp"
 #include <crtdbg.h>
@@ -423,8 +426,88 @@ public:
 					if (i_n < 3 || !prp->ptexTexture)
 						continue;
 
-					// d3dpixColour is 0x00RRGGBB; force opaque alpha for the flat draw.
-					uint32 u4_col = (uint32)prp->ptexTexture->d3dpixColour | 0xFF000000;
+					const CTexture* ptex = prp->ptexTexture.ptGet();
+					CRaster*        pras = ptex->prasGetTexture(0).ptGet();
+
+					// Resolve a D3D11 texture handle for this polygon, converting the raster
+					// (once, cached by CTexture address) to BGRA.  Two source formats:
+					//  - 8-bit palettised: index through the CLUT's source palette.
+					//  - 16-bit truecolour: use the raster's own pixel format (clrFromPixel),
+					//    which handles 565/555 generically.
+					// Anything else (flat-colour material, no raster) draws untextured in the
+					// texture's representative colour.
+					bool b_pal8  = pras && pras->iWidth > 0 && pras->iPixelBits == 8 &&
+					               ptex->ppcePalClut && ptex->ppcePalClut->ppalPalette;
+					bool b_rgb16 = pras && pras->iWidth > 0 && pras->iPixelBits == 16;
+
+					void*  p_texhandle = 0;
+					uint32 u4_col      = 0xFFFFFFFF;
+					bool   b_clamp     = false;
+
+					if (b_pal8 || b_rgb16)
+					{
+						b_clamp = pras->bNotTileable;
+						p_texhandle = RenderD3D11::GetTexture(ptex);
+						if (!p_texhandle)
+						{
+							// Colour-keyed textures (erfTRANSPARENT) use texel 0 as transparent.
+							// The flag can live on the polygon face or the texture itself.
+							bool b_transp = prp->seterfFace[erfTRANSPARENT] ||
+							                ptex->seterfFeatures[erfTRANSPARENT];
+							int i_w = pras->iWidth, i_h = pras->iHeight, i_lp = pras->iLinePixels;
+							static std::vector<uint32> s_scratch;
+							s_scratch.resize((size_t)i_w * i_h);
+
+							pras->Lock();
+							const uint8* pu1_base = (const uint8*)pras->pSurface;
+							if (pu1_base && b_pal8)
+							{
+								const CPal* ppal   = ptex->ppcePalClut->ppalPalette;
+								int         i_npal = (int)ppal->aclrPalette.uLen;
+								for (int y = 0; y < i_h; ++y)
+								{
+									const uint8* pu1_row = pu1_base + (size_t)y * i_lp;
+									uint32*      pu4_dst = &s_scratch[(size_t)y * i_w];
+									for (int x = 0; x < i_w; ++x)
+									{
+										uint8 u1_idx = pu1_row[x];
+										// Premultiplied: transparent texel -> 0 (rgb and alpha).
+										if (b_transp && u1_idx == 0)
+											pu4_dst[x] = 0;
+										else
+										{
+											uint32 u4_rgb = (u1_idx < i_npal) ? ppal->aclrPalette[u1_idx].u4Value : 0;
+											pu4_dst[x] = (u4_rgb & 0x00FFFFFF) | 0xFF000000u;
+										}
+									}
+								}
+							}
+							else if (pu1_base)		// b_rgb16
+							{
+								for (int y = 0; y < i_h; ++y)
+								{
+									const uint16* pu2_row = (const uint16*)pu1_base + (size_t)y * i_lp;
+									uint32*       pu4_dst = &s_scratch[(size_t)y * i_w];
+									for (int x = 0; x < i_w; ++x)
+									{
+										uint16 u2_px = pu2_row[x];
+										if (b_transp && u2_px == 0)
+											pu4_dst[x] = 0;
+										else
+											pu4_dst[x] = (pras->clrFromPixel(u2_px).u4Value & 0x00FFFFFF) | 0xFF000000u;
+									}
+								}
+							}
+							pras->Unlock();
+
+							p_texhandle = RenderD3D11::CreateTexture(ptex, i_w, i_h, &s_scratch[0]);
+						}
+					}
+					else
+					{
+						// d3dpixColour is 0x00RRGGBB; force opaque alpha.
+						u4_col = (uint32)ptex->d3dpixColour | 0xFF000000;
+					}
 
 					RenderD3D11::SVert av[64];
 					if (i_n > 64)
@@ -440,7 +523,7 @@ public:
 						av[iv].fU      = prv->tcTex.tX;
 						av[iv].fV      = prv->tcTex.tY;
 					}
-					RenderD3D11::SubmitPolygon(av, i_n, 0);
+					RenderD3D11::SubmitPolygon(av, i_n, p_texhandle, b_clamp);
 				}
 				RenderD3D11::Present();
 			}

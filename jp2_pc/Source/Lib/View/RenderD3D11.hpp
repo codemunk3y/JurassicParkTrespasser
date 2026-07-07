@@ -75,13 +75,27 @@ namespace RenderD3D11
 
 	//******************************************************************************************
 	//
+	// Texture cache.  Kept engine-agnostic: the caller converts the engine texture to a plain
+	// BGRA image (one 0xAARRGGBB texel each) and supplies a stable key pointer (the CTexture
+	// address).  GetTexture returns the cached opaque handle for p_key, or null if not created
+	// yet.  CreateTexture uploads the image, caches it under p_key, and returns the handle
+	// (pass it as SubmitPolygon's p_texture).  A null handle there means "untextured" (the
+	// module binds a 1x1 white texture, so the vertex colour shows through).
+	//
+	void* GetTexture(const void* p_key);
+	void* CreateTexture(const void* p_key, int i_width, int i_height, const unsigned int* pu4_bgra);
+
+	//******************************************************************************************
+	//
 	// Submit one screen-space polygon (triangle fan of i_count vertices) with its texture.
 	//
 	// SLICE 2 (not yet implemented): append to a dynamic vertex buffer and issue the draw
 	// through the passthrough vertex shader + textured pixel shader.  Stubbed no-op for now
 	// so the device/swap-chain/present infrastructure can be brought up and verified first.
 	//
-	void SubmitPolygon(const SVert* pav_verts, int i_count, void* p_texture);
+	// b_clamp selects clamp (vs wrap) texture addressing - set it for non-tileable
+	// textures so their UVs don't repeat.
+	void SubmitPolygon(const SVert* pav_verts, int i_count, void* p_texture, bool b_clamp);
 
 	//******************************************************************************************
 	//
