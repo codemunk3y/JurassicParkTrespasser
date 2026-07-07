@@ -143,6 +143,7 @@
 #include "Lib/View/Viewport.hpp"
 #include "Lib/View/Palette.hpp"
 #include "Lib/View/ColourBase.hpp"
+#include "Lib/View/Clut.hpp"
 #include "Lib/View/RenderD3D11.hpp"
 #include <vector>
 #include "Lib/Sys/DebugConsole.hpp"
@@ -443,15 +444,16 @@ public:
 					void*  p_texhandle = 0;
 					uint32 u4_col      = 0xFFFFFFFF;
 					bool   b_clamp     = false;
+					// Terrain: dynamic atlas pages, and already lit during page compositing
+					// (they drop erfLIGHT_SHADE) - so re-upload each frame AND don't re-light.
+					bool   b_terrain   = prp->seterfFace[erfSOURCE_TERRAIN];
 
 					if (b_pal8 || b_rgb16)
 					{
 						b_clamp = pras->bNotTileable;
 
-						// Terrain uses dynamic atlas pages (recomposited each frame, with
-						// recycled CTexture objects), so re-upload it every frame; static
-						// world textures are persistent and cached by CTexture address.
-						bool b_terrain = prp->seterfFace[erfSOURCE_TERRAIN];
+						// Static world textures are persistent and cached by CTexture
+						// address; terrain is dynamic and re-uploaded every frame.
 						if (!b_terrain)
 							p_texhandle = RenderD3D11::GetTexture(ptex);
 
@@ -518,17 +520,47 @@ public:
 						u4_col = (uint32)ptex->d3dpixColour | 0xFF000000;
 					}
 
+					// Base colour (white for textured, the flat material colour otherwise),
+					// modulated per-vertex by the CLUT's shading colour for Gouraud lighting.
+					// Use the CLUT's own GetColours(): it lerps between the start/end ramp
+					// colours with an ambient floor (rvStart) and divides by iNumShadedValues,
+					// so shadows land on the ambient level - a plain linear cv scale crushes
+					// them to black.  Terrain is pre-lit in its texture, so left full bright.
+					uint32 u4_base_r = (u4_col >> 16) & 0xFF;
+					uint32 u4_base_g = (u4_col >>  8) & 0xFF;
+					uint32 u4_base_b =  u4_col        & 0xFF;
+
+					CClut* pclut   = (!b_terrain && ptex->ppcePalClut) ? ptex->ppcePalClut->pclutClut : 0;
+					float  f_cvmax = pclut ? (float(pclut->iNumRampValues) - 0.01f) : 0.0f;
+
 					RenderD3D11::SVert av[64];
 					if (i_n > 64)
 						i_n = 64;
 					for (int iv = 0; iv < i_n; ++iv)
 					{
 						SRenderVertex* prv = prp->paprvPolyVertices[iv];
+
+						uint32 u4_r = u4_base_r, u4_g = u4_base_g, u4_b = u4_base_b;
+						if (pclut)
+						{
+							float f_cv = prv->cvIntensity;
+							if (f_cv < 0.0f)
+								f_cv = prp->cvFace;
+							if (f_cv < 0.0f) f_cv = 0.0f;
+							else if (f_cv > f_cvmax) f_cv = f_cvmax;
+
+							CColour clr_mod, clr_add;
+							pclut->GetColours(f_cv, &clr_mod, &clr_add);
+							u4_r = (u4_base_r * ((clr_mod.u4Value >> 16) & 0xFF)) / 255;
+							u4_g = (u4_base_g * ((clr_mod.u4Value >>  8) & 0xFF)) / 255;
+							u4_b = (u4_base_b * ( clr_mod.u4Value        & 0xFF)) / 255;
+						}
+
 						av[iv].fSX     = prv->v3Screen.tX;
 						av[iv].fSY     = prv->v3Screen.tY;
 						av[iv].fSZ     = 0.5f;
 						av[iv].fInvW   = prv->v3Screen.tZ;
-						av[iv].u4Color = u4_col;
+						av[iv].u4Color = 0xFF000000u | (u4_r << 16) | (u4_g << 8) | u4_b;
 						av[iv].fU      = prv->tcTex.tX;
 						av[iv].fV      = prv->tcTex.tY;
 					}
