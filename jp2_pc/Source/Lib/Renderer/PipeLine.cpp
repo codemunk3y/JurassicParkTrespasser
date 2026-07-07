@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive. 1996
+ * Copyright ï¿½ DreamWorks Interactive. 1996
  *
  * Implementation of PipeLine.hpp.
  *
@@ -83,6 +83,21 @@
 #include "Lib/Renderer/ScreenRenderAuxD3D.hpp"
 #include "Lib/W95/Direct3D.hpp"
 #include "Lib/Std/LocalArray.hpp"
+
+//
+// RENDER CACHE DISABLE (env TRESPASS_NOCACHE): the render cache pre-renders distant/complex
+// objects to 2D billboard cards for speed (a 1998 optimisation).  Those billboards have a
+// surround that the D3D11 path doesn't key transparent (blue "blobs" around objects), and
+// direct rendering is higher fidelity on modern hardware.  When set, skip caching so every
+// object renders directly.  Default off (caching on, original behaviour).
+//
+static bool bRenderCacheDisabled()
+{
+	static int s_i_nocache = -1;
+	if (s_i_nocache < 0)
+		s_i_nocache = GetEnvironmentVariableA("TRESPASS_NOCACHE", 0, 0) > 0 ? 1 : 0;
+	return s_i_nocache != 0;
+}
 
 #define bINIDIVIDUAL_POLY_STATS (0)
 #define bCLIPPING_CHECK			(VER_DEBUG)
@@ -1626,7 +1641,7 @@ public:
 		if (!pSettings->bTargetCache)
 		{
 			// Try to render cache the current node; if it succeeds, render the cache.
-			if (pSettings->bRenderCache && bShouldCache
+			if (pSettings->bRenderCache && !bRenderCacheDisabled() && bShouldCache
 			(
 				ppart,
 				renc.Camera,
@@ -1803,7 +1818,7 @@ public:
 			CCycleTimer cmtr_caches;
 
 			// Add unseen caches to the scheduler.
-			if (pSettings->bRenderCache)
+			if (pSettings->bRenderCache && !bRenderCacheDisabled())
 			{
 				CCycleTimer ctmr;
 

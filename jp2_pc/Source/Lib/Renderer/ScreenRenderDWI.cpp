@@ -432,14 +432,23 @@ public:
 
 					// Resolve a D3D11 texture handle for this polygon, converting the raster
 					// (once, cached by CTexture address) to BGRA.  Two source formats:
-					//  - 8-bit palettised: index through the CLUT's source palette.
+					//  - 8-bit palettised: index through the raster's OWN attached palette
+					//    (pxf.ppalAttached).  The CLUT's source palette (ppcePalClut) is a
+					//    shared/placeholder palette for some textures and resolves to pure
+					//    blue - the raster's attached palette is the authoritative one.
 					//  - 16-bit truecolour: use the raster's own pixel format (clrFromPixel),
 					//    which handles 565/555 generically.
 					// Anything else (flat-colour material, no raster) draws untextured in the
 					// texture's representative colour.
-					bool b_pal8  = pras && pras->iWidth > 0 && pras->iPixelBits == 8 &&
-					               ptex->ppcePalClut && ptex->ppcePalClut->ppalPalette;
-					bool b_rgb16 = pras && pras->iWidth > 0 && pras->iPixelBits == 16;
+					bool b_bump  = ptex->seterfFeatures[erfBUMP];
+
+					const CPal* ppal_tex = 0;
+					if (pras && pras->iPixelBits == 8)
+						ppal_tex = pras->pxf.ppalAttached ? pras->pxf.ppalAttached
+						         : (ptex->ppcePalClut ? ptex->ppcePalClut->ppalPalette : 0);
+
+					bool b_pal8  = !b_bump && pras && pras->iWidth > 0 && pras->iPixelBits == 8 && ppal_tex;
+					bool b_rgb16 = !b_bump && pras && pras->iWidth > 0 && pras->iPixelBits == 16;
 
 					void*  p_texhandle = 0;
 					uint32 u4_col      = 0xFFFFFFFF;
@@ -471,7 +480,7 @@ public:
 							const uint8* pu1_base = (const uint8*)pras->pSurface;
 							if (pu1_base && b_pal8)
 							{
-								const CPal* ppal   = ptex->ppcePalClut->ppalPalette;
+								const CPal* ppal   = ppal_tex;
 								int         i_npal = (int)ppal->aclrPalette.uLen;
 								for (int y = 0; y < i_h; ++y)
 								{
@@ -485,8 +494,12 @@ public:
 											pu4_dst[x] = 0;
 										else
 										{
-											uint32 u4_rgb = (u1_idx < i_npal) ? ppal->aclrPalette[u1_idx].u4Value : 0;
-											pu4_dst[x] = (u4_rgb & 0x00FFFFFF) | 0xFF000000u;
+											uint32 u4_rgb = ((u1_idx < i_npal) ? ppal->aclrPalette[u1_idx].u4Value : 0) & 0x00FFFFFF;
+											// Uninitialised / paged-out palette entries are the pure-blue
+											// placeholder; fall back to the material's representative colour.
+											if (u4_rgb == 0x000000FF)
+												u4_rgb = (uint32)ptex->d3dpixColour & 0x00FFFFFF;
+											pu4_dst[x] = u4_rgb | 0xFF000000u;
 										}
 									}
 								}

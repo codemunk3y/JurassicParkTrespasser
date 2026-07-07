@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive, 1998.
+ * Copyright ï¿½ DreamWorks Interactive, 1998.
  *
  * Implementation of PartitionPriv.cpp.
  *
@@ -47,6 +47,7 @@
  **********************************************************************************************/
 
 #include <math.h>
+#include <stdlib.h>
 #include "Common.hpp"
 #include "PartitionPriv.hpp"
 #include "Lib/EntityDBase/WorldDBase.hpp"
@@ -184,9 +185,28 @@ const float fMaxCullingDistanceShadow = 200.0f;
 		}
 		SetMinMax(f_current_width, 320.0f, 640.0f);
 
+		//
+		// DRAW DISTANCE (env TRESPASS_DRAWDIST): the original game culls objects at
+		// designer-authored distances, giving the jarring "objects pop into view as you
+		// approach" experience.  fCullDistanceCombined scales the *squared* cull threshold
+		// globally (see CPartition::bInRange), so a linear multiplier N here - squared into
+		// N*N - pushes the whole object draw distance out by N.  Default 1.0 = original.
+		// The shadow cull is left at 1.0 to avoid a large shadow-rendering cost.  Rendering
+		// more distant objects costs more CPU geometry work; the D3D11 path (fill on GPU)
+		// leaves headroom for it.
+		//
+		static float s_f_drawdist = -1.0f;
+		if (s_f_drawdist < 0.0f)
+		{
+			const char* psz_env = getenv("TRESPASS_DRAWDIST");
+			s_f_drawdist = (psz_env && *psz_env) ? (float)atof(psz_env) : 1.0f;
+			if (s_f_drawdist < 1.0f)  s_f_drawdist = 1.0f;
+			if (s_f_drawdist > 20.0f) s_f_drawdist = 20.0f;
+		}
+
 		CPartition::SetCombinedCulling
 		(
-			1.0f,
+			s_f_drawdist * s_f_drawdist,
 			1.0f
 		);
 		/*
