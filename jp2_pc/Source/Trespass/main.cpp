@@ -257,9 +257,14 @@ void SetSpeedDefaults()
 	// Re-apply the auto settings once whenever this detection logic changes.
 	// The key stores a version number; the original code (and the broken
 	// processor.dll era) stored 1, which left modern machines mis-classified as
-	// "slow" (320x240 / lowest quality).  Bumping to 2 forces a single re-detect
-	// on those machines, then respects the user's own choices afterwards.
-	const int i_settings_version = 2;
+	// "slow" (320x240 / lowest quality).  Version 2 forced a re-detect on those
+	// machines.  Version 3 raises the "fastest machine" default from render
+	// quality 3 to 4 (the max): the original tiers were calibrated for a 1998
+	// Pentium II, so even the top tier capped one notch below max detail, but a
+	// modern CPU renders a frame in ~9 ms (see the TRESPASS_PROFILE dump) with
+	// ample headroom for quality 4.  Bumping the version forces a single
+	// re-detect, then respects the user's own choices afterwards.
+	const int i_settings_version = 3;
 	if (GetRegValue(strAUTOSETTINGS, 0) >= i_settings_version)
 	{
 		Trace(("Settings for machine already performed...\n"));
@@ -299,8 +304,9 @@ void SetSpeedDefaults()
 		return;
 	}
 
-	// Fastest machines.
-	SetRegValue(REG_KEY_RENDERING_QUALITY, 3);
+	// Fastest machines.  Modern hardware clears the original speed tiers by
+	// orders of magnitude, so default to the maximum render quality (4).
+	SetRegValue(REG_KEY_RENDERING_QUALITY, 4);
 	SetDimensions(512, 384);
 	Trace(("Set for fastest machine...\n"));
 }
