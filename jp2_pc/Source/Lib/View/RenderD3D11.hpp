@@ -85,6 +85,11 @@ namespace RenderD3D11
 	void* GetTexture(const void* p_key);
 	void* CreateTexture(const void* p_key, int i_width, int i_height, const unsigned int* pu4_bgra);
 
+	// For DYNAMIC textures (terrain atlas pages) whose contents change every frame and
+	// whose CTexture objects are recycled: re-uploads the pixels into a persistent dynamic
+	// GPU texture (created/resized as needed) and returns its handle.  Call every frame.
+	void* UpdateDynamicTexture(const void* p_key, int i_width, int i_height, const unsigned int* pu4_bgra);
+
 	//******************************************************************************************
 	//
 	// Submit one screen-space polygon (triangle fan of i_count vertices) with its texture.

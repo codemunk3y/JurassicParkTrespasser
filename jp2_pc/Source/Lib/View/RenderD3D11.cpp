@@ -37,6 +37,9 @@ namespace
 	ID3D11DeviceContext*     s_pd3dContext    = 0;
 	IDXGISwapChain*          s_pSwapChain     = 0;
 	ID3D11RenderTargetView*  s_pBackBufferRTV = 0;
+	ID3D11Texture2D*         s_pDepthTex      = 0;
+	ID3D11DepthStencilView*  s_pDSV           = 0;
+	ID3D11DepthStencilState* s_pDepthState    = 0;
 
 	// ---- Pipeline -----------------------------------------------------------------------
 	ID3D11VertexShader*      s_pVS            = 0;
@@ -64,8 +67,13 @@ namespace
 	struct SBatch { ID3D11ShaderResourceView* pSRV; UINT u_start; UINT u_count; bool b_clamp; };
 	std::vector<SBatch> s_batches;
 
-	// CTexture* -> SRV.  Textures are largely persistent, so a plain grow-only cache is fine.
+	// CTexture* -> SRV.  Static-world textures are persistent, so a grow-only cache is fine.
 	std::unordered_map<const void*, ID3D11ShaderResourceView*> s_tex_cache;
+
+	// Dynamic (terrain) textures: contents change per frame and CTexture objects recycle,
+	// so keep a persistent DYNAMIC gpu texture per key and re-upload its pixels each frame.
+	struct SDynTex { ID3D11Texture2D* pTex; ID3D11ShaderResourceView* pSRV; int i_w; int i_h; };
+	std::unordered_map<const void*, SDynTex> s_dyn_cache;
 
 	// VS: screen pixels -> clip space, reconstructing w = 1/rhw so UV/colour interpolate
 	// perspective-correctly.  gViewParams = (2/renderW, 2/renderH).  Flat depth 0.5 (no
@@ -78,8 +86,9 @@ namespace
 		"  float w = 1.0 / max(i.sr.w, 1e-6);\n"          // sr.w = rhw = 1/z
 		"  float ndcx = i.sr.x * gViewParams.x - 1.0;\n"
 		"  float ndcy = 1.0 - i.sr.y * gViewParams.y;\n"
+		"  float d = clamp(i.sr.w, 0.0, 0.99);\n"         // depth = rhw, closer = larger
 		"  VSOut o;\n"
-		"  o.pos = float4(ndcx * w, ndcy * w, 0.5 * w, w);\n"
+		"  o.pos = float4(ndcx * w, ndcy * w, d * w, w);\n"  // final depth = d
 		"  o.col = i.col;\n"
 		"  o.uv  = i.uv;\n"
 		"  return o;\n"
@@ -90,7 +99,11 @@ namespace
 		"Texture2D    gTex : register(t0);\n"
 		"SamplerState gSmp : register(s0);\n"
 		"struct VSOut { float4 pos : SV_Position; float4 col : COLOR0; float2 uv : TEXCOORD0; };\n"
-		"float4 main(VSOut i) : SV_Target { return gTex.Sample(gSmp, i.uv) * i.col; }\n";
+		"float4 main(VSOut i) : SV_Target {\n"
+		"  float4 c = gTex.Sample(gSmp, i.uv) * i.col;\n"
+		"  clip(c.a - 0.003);\n"     // discard colour-key holes so they don't write depth
+		"  return c;\n"
+		"}\n";
 
 	inline void Log(const char* psz) { OutputDebugStringA(psz); }
 
@@ -130,6 +143,14 @@ namespace
 		hr = s_pd3dDevice->CreateRenderTargetView(p_bb, 0, &s_pBackBufferRTV);
 		p_bb->Release();
 		if (FAILED(hr)) { Log("TRESPASS_D3D11: CreateRenderTargetView FAILED\n"); Shutdown_Internal(); return; }
+
+		// Depth buffer, matching the back-buffer size.
+		D3D11_TEXTURE2D_DESC dtd; ZeroMemory(&dtd, sizeof(dtd));
+		dtd.Width = u_w; dtd.Height = u_h; dtd.MipLevels = 1; dtd.ArraySize = 1;
+		dtd.Format = DXGI_FORMAT_D32_FLOAT; dtd.SampleDesc.Count = 1;
+		dtd.Usage = D3D11_USAGE_DEFAULT; dtd.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+		if (FAILED(s_pd3dDevice->CreateTexture2D(&dtd, 0, &s_pDepthTex))) { Log("TRESPASS_D3D11: CreateTexture2D(depth) FAILED\n"); Shutdown_Internal(); return; }
+		if (FAILED(s_pd3dDevice->CreateDepthStencilView(s_pDepthTex, 0, &s_pDSV))) { Log("TRESPASS_D3D11: CreateDepthStencilView FAILED\n"); Shutdown_Internal(); return; }
 
 		s_u_width = u_w; s_u_height = u_h;
 		s_b_active = true;
@@ -217,6 +238,14 @@ namespace
 		bld.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
 		if (FAILED(s_pd3dDevice->CreateBlendState(&bld, &s_pBlend))) { Log("TRESPASS_D3D11: CreateBlendState FAILED\n"); return; }
 
+		// Depth test: rhw (1/z) is the depth, closer = larger, so compare GREATER-EQUAL
+		// (matching the 1998 aux-D3D path).  Write enabled.
+		D3D11_DEPTH_STENCIL_DESC dsd; ZeroMemory(&dsd, sizeof(dsd));
+		dsd.DepthEnable    = TRUE;
+		dsd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+		dsd.DepthFunc      = D3D11_COMPARISON_GREATER_EQUAL;
+		if (FAILED(s_pd3dDevice->CreateDepthStencilState(&dsd, &s_pDepthState))) { Log("TRESPASS_D3D11: CreateDepthStencilState FAILED\n"); return; }
+
 		const unsigned int u_white = 0xFFFFFFFF;
 		s_pWhiteSRV = CreateSRVFromBGRA(1, 1, &u_white);
 		if (!s_pWhiteSRV) { Log("TRESPASS_D3D11: white texture FAILED\n"); return; }
@@ -244,6 +273,12 @@ namespace
 		for (std::unordered_map<const void*, ID3D11ShaderResourceView*>::iterator it = s_tex_cache.begin(); it != s_tex_cache.end(); ++it)
 			if (it->second) it->second->Release();
 		s_tex_cache.clear();
+		for (std::unordered_map<const void*, SDynTex>::iterator it = s_dyn_cache.begin(); it != s_dyn_cache.end(); ++it)
+		{
+			if (it->second.pSRV) it->second.pSRV->Release();
+			if (it->second.pTex) it->second.pTex->Release();
+		}
+		s_dyn_cache.clear();
 		if (s_pWhiteSRV)      { s_pWhiteSRV->Release();      s_pWhiteSRV      = 0; }
 		if (s_pBlend)         { s_pBlend->Release();         s_pBlend         = 0; }
 		if (s_pSampClamp)     { s_pSampClamp->Release();     s_pSampClamp     = 0; }
@@ -254,6 +289,9 @@ namespace
 		if (s_pLayout)        { s_pLayout->Release();        s_pLayout        = 0; }
 		if (s_pPS)            { s_pPS->Release();            s_pPS            = 0; }
 		if (s_pVS)            { s_pVS->Release();            s_pVS            = 0; }
+		if (s_pDepthState)    { s_pDepthState->Release();    s_pDepthState    = 0; }
+		if (s_pDSV)           { s_pDSV->Release();           s_pDSV           = 0; }
+		if (s_pDepthTex)      { s_pDepthTex->Release();      s_pDepthTex      = 0; }
 		if (s_pBackBufferRTV) { s_pBackBufferRTV->Release(); s_pBackBufferRTV = 0; }
 		if (s_pSwapChain)     { s_pSwapChain->Release();     s_pSwapChain     = 0; }
 		if (s_pd3dContext)    { s_pd3dContext->Release();    s_pd3dContext    = 0; }
@@ -293,6 +331,42 @@ namespace RenderD3D11
 		return (void*)p_srv;
 	}
 
+	void* UpdateDynamicTexture(const void* p_key, int i_width, int i_height, const unsigned int* pu4_bgra)
+	{
+		if (!s_pd3dDevice || i_width < 1 || i_height < 1) return 0;
+
+		SDynTex& dt = s_dyn_cache[p_key];		// inserts a zeroed entry on first sight
+
+		// (Re)create the GPU texture if it doesn't exist or the size changed.
+		if (!dt.pTex || dt.i_w != i_width || dt.i_h != i_height)
+		{
+			if (dt.pSRV) { dt.pSRV->Release(); dt.pSRV = 0; }
+			if (dt.pTex) { dt.pTex->Release(); dt.pTex = 0; }
+
+			D3D11_TEXTURE2D_DESC td; ZeroMemory(&td, sizeof(td));
+			td.Width = i_width; td.Height = i_height; td.MipLevels = 1; td.ArraySize = 1;
+			td.Format = DXGI_FORMAT_B8G8R8A8_UNORM; td.SampleDesc.Count = 1;
+			td.Usage = D3D11_USAGE_DYNAMIC;
+			td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+			td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+			if (FAILED(s_pd3dDevice->CreateTexture2D(&td, 0, &dt.pTex)) || !dt.pTex) { dt.pTex = 0; return 0; }
+			if (FAILED(s_pd3dDevice->CreateShaderResourceView(dt.pTex, 0, &dt.pSRV))) { dt.pTex->Release(); dt.pTex = 0; return 0; }
+			dt.i_w = i_width; dt.i_h = i_height;
+		}
+
+		// Upload this frame's pixels (row by row - the map pitch may exceed width*4).
+		D3D11_MAPPED_SUBRESOURCE ms;
+		if (SUCCEEDED(s_pd3dContext->Map(dt.pTex, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms)))
+		{
+			const unsigned char* p_src = (const unsigned char*)pu4_bgra;
+			unsigned char*       p_dst = (unsigned char*)ms.pData;
+			for (int y = 0; y < i_height; ++y)
+				memcpy(p_dst + (size_t)y * ms.RowPitch, p_src + (size_t)y * i_width * 4, (size_t)i_width * 4);
+			s_pd3dContext->Unmap(dt.pTex, 0);
+		}
+		return (void*)dt.pSRV;
+	}
+
 	bool bBeginFrame(int i_width, int i_height)
 	{
 		if (!bEnabled()) return false;
@@ -300,13 +374,15 @@ namespace RenderD3D11
 		if (!s_b_active)     return false;
 		if (!s_b_pipeline)   TryBuildPipeline();
 		if (!s_pVS || !s_pPS || !s_pLayout || !s_pCB || !s_pRaster ||
-		    !s_pSampWrap || !s_pSampClamp || !s_pBlend || !s_pWhiteSRV)
+		    !s_pSampWrap || !s_pSampClamp || !s_pBlend || !s_pWhiteSRV ||
+		    !s_pDSV || !s_pDepthState)
 			return false;
 
 		s_verts.clear();
 		s_batches.clear();
 
-		s_pd3dContext->OMSetRenderTargets(1, &s_pBackBufferRTV, 0);
+		s_pd3dContext->OMSetRenderTargets(1, &s_pBackBufferRTV, s_pDSV);
+		s_pd3dContext->OMSetDepthStencilState(s_pDepthState, 0);
 
 		const float af_blend[4] = { 0, 0, 0, 0 };
 		s_pd3dContext->OMSetBlendState(s_pBlend, af_blend, 0xFFFFFFFF);
@@ -324,6 +400,8 @@ namespace RenderD3D11
 
 		const float af_clear[4] = { 0.10f, 0.35f, 0.45f, 1.0f };
 		s_pd3dContext->ClearRenderTargetView(s_pBackBufferRTV, af_clear);
+		// Depth cleared to 0 (far); closer fragments have larger rhw and win via GEQUAL.
+		s_pd3dContext->ClearDepthStencilView(s_pDSV, D3D11_CLEAR_DEPTH, 0.0f, 0);
 
 		D3D11_MAPPED_SUBRESOURCE ms;
 		if (SUCCEEDED(s_pd3dContext->Map(s_pCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms)))

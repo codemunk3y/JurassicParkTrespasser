@@ -447,8 +447,15 @@ public:
 					if (b_pal8 || b_rgb16)
 					{
 						b_clamp = pras->bNotTileable;
-						p_texhandle = RenderD3D11::GetTexture(ptex);
-						if (!p_texhandle)
+
+						// Terrain uses dynamic atlas pages (recomposited each frame, with
+						// recycled CTexture objects), so re-upload it every frame; static
+						// world textures are persistent and cached by CTexture address.
+						bool b_terrain = prp->seterfFace[erfSOURCE_TERRAIN];
+						if (!b_terrain)
+							p_texhandle = RenderD3D11::GetTexture(ptex);
+
+						if (b_terrain || !p_texhandle)
 						{
 							// Colour-keyed textures (erfTRANSPARENT) use texel 0 as transparent.
 							// The flag can live on the polygon face or the texture itself.
@@ -500,7 +507,9 @@ public:
 							}
 							pras->Unlock();
 
-							p_texhandle = RenderD3D11::CreateTexture(ptex, i_w, i_h, &s_scratch[0]);
+							p_texhandle = b_terrain
+							            ? RenderD3D11::UpdateDynamicTexture(ptex, i_w, i_h, &s_scratch[0])
+							            : RenderD3D11::CreateTexture(ptex, i_w, i_h, &s_scratch[0]);
 						}
 					}
 					else
