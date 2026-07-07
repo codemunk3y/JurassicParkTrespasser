@@ -29,6 +29,9 @@
 #include "..\lib\sys\reginit.hpp"
 #include "..\Lib\EntityDBase\MessageTypes\MsgStep.hpp"
 #include "..\Game\AI\AIMain.hpp"
+#include "..\Lib\Sys\Profile.hpp"
+#include <stdio.h>
+#include <stdlib.h>
 
 BOOL bQuitGame = FALSE;
 
@@ -838,6 +841,89 @@ void CGameWnd::DrawWndInfo(CRaster * pRaster, RECT * prc)
     else
     {
 	    gmlGameLoop.Paint();
+
+	    // PROFILER DUMP (DIAGNOSTIC, env TRESPASS_PROFILE): the render pipeline
+	    // already feeds per-stage timers (Transform/Clip/DepthSort/DrawPolygon)
+	    // into proProfile via CProfileStat::Add.  When TRESPASS_PROFILE is set,
+	    // accumulate those over a window of frames and write the averaged tree
+	    // to %TEMP%\trespass_profile.txt, then reset for the next window.  In
+	    // the normalised output psRender's per-count value is ms/frame; leaf
+	    // stages show ms and % of parent - i.e. how much of a frame the CPU
+	    // geometry pass costs (the number that gates VR feasibility).  Requires
+	    // a Release or Debug build (VER_TIMING_STATS is FALSE in MODE_FINAL).
+#if VER_TIMING_STATS
+	    {
+	        static int s_i_profile = -1;
+	        static int s_i_window  = 300;
+	        if (s_i_profile < 0)
+	        {
+	            char ach_env[32];
+	            int  i_len = GetEnvironmentVariableA("TRESPASS_PROFILE", ach_env, sizeof(ach_env));
+	            s_i_profile = i_len > 0 ? 1 : 0;
+	            if (s_i_profile)
+	            {
+	                int i_val = atoi(ach_env);
+	                if (i_val >= 10)
+	                    s_i_window = i_val;
+	            }
+	        }
+	        if (s_i_profile)
+	        {
+	            static int s_i_frames = 0;
+	            if (++s_i_frames >= s_i_window)
+	            {
+	                CStrBuffer strbuf(8000);
+	                CProfileStat::WriteHeader(strbuf);
+	                proProfile.psMain.WriteToBuffer(strbuf, 0, true);
+
+	                char ach_path[MAX_PATH];
+	                int  i_dir = GetTempPathA(sizeof(ach_path), ach_path);
+	                strcpy(ach_path + i_dir, "trespass_profile.txt");
+
+	                // Explicit ms/frame for the stages that matter.  The tree below
+	                // normalises to ms-per-COUNT (per-poly/per-vertex), which rounds
+	                // the big sub-stages to 0.0; fSeconds()/frames gives ms/FRAME.
+	                float f_fr = (float)s_i_frames;
+	                #define MSPF(ps) ((ps).fSeconds() * 1000.0f / f_fr)
+
+	                FILE* pf = fopen(ach_path, "w");
+	                if (pf)
+	                {
+	                    fprintf(pf, "Trespasser render profile - averaged over %d frames\n\n", s_i_frames);
+	                    fprintf(pf, "KEY STAGES (ms/frame, single CPU thread)\n");
+	                    fprintf(pf, "  Frame TOTAL   : %6.2f\n", MSPF(proProfile.psFrame));
+	                    fprintf(pf, "   Step (sim)   : %6.2f   [AI %5.2f  Physics %5.2f]\n",
+	                            MSPF(proProfile.psStep), MSPF(proProfile.psAI), MSPF(proProfile.psPhysics));
+	                    fprintf(pf, "   Render TOTAL : %6.2f\n", MSPF(proProfile.psRender));
+	                    fprintf(pf, "    Occlusion   : %6.2f\n", MSPF(proProfile.psOcclusion));
+	                    fprintf(pf, "    RenderShape : %6.2f   (geometry: transform/clip/light/project)\n",
+	                            MSPF(proProfile.psRenderShape));
+	                    fprintf(pf, "    Presort     : %6.2f   (DEPTH SORT + quicksort + splits)\n",
+	                            MSPF(proProfile.psPresort));
+	                    fprintf(pf, "    DrawPolygon : %6.2f   (software FILL - scales with pixels/res)\n",
+	                            MSPF(proProfile.psDrawPolygon));
+	                    fprintf(pf, "    TerrainUpd  : %6.2f\n", MSPF(proProfile.psTerrainUpdate));
+	                    fprintf(pf, "    ClearScreen : %6.2f\n", MSPF(proProfile.psClearScreen));
+	                    fprintf(pf, "    BeginFrame  : %6.2f\n", MSPF(proProfile.psBeginFrame));
+	                    fprintf(pf, "    EndFrame    : %6.2f   [Flip %5.2f]\n",
+	                            MSPF(proProfile.psEndFrame), MSPF(proProfile.psFlip));
+	                    fprintf(pf, "  Render polys/frame : %.0f\n",
+	                            proProfile.psDrawPolygon.iGetCount() / f_fr);
+	                    fprintf(pf, "\n---- full normalised tree (ms per COUNT) ----\n");
+	                    fputs((const char*)strbuf, pf);
+	                    fclose(pf);
+	                    OutputDebugStringA("TRESPASS_PROFILE: wrote ");
+	                    OutputDebugStringA(ach_path);
+	                    OutputDebugStringA("\n");
+	                }
+
+	                #undef MSPF
+	                proProfile.psMain.Reset();
+	                s_i_frames = 0;
+	            }
+	        }
+	    }
+#endif // VER_TIMING_STATS
 
         if (m_puictlCheat->GetVisible() || m_iClear)
         {
