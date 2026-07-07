@@ -1,6 +1,6 @@
 /**********************************************************************************************
  *
- * Copyright © DreamWorks Interactive. 1996
+ * Copyright ï¿½ DreamWorks Interactive. 1996
  *
  * Contents:
  *
@@ -141,6 +141,7 @@
 #include "Lib/Sys/Profile.hpp"
 #include "Lib/View/Raster.hpp"
 #include "Lib/View/Viewport.hpp"
+#include "Lib/View/RenderD3D11.hpp"
 #include "Lib/Sys/DebugConsole.hpp"
 #include "Lib/Renderer/LightBlend.hpp"
 #include <crtdbg.h>
@@ -398,6 +399,24 @@ public:
 	{
 		// Set even scanlines only flag.
 		bEvenScanlinesOnly = pSettings->bHalfScanlines;
+
+		// EXPERIMENTAL D3D11 PRESENT (env TRESPASS_D3D11): when enabled, mirror the final
+		// screen-space polygon list of the MAIN SCREEN through the modern GPU backend.
+		// This is the same transformed/lit/textured stream the software rasteriser draws;
+		// RenderD3D11 renders it via a passthrough shader and presents through a DXGI swap
+		// chain (CRasterWin::Flip suppresses the software present while this is active).
+		// Slice 1: the submit loop is stubbed, so this just clears + presents (solid
+		// colour) to prove the device/swap-chain/present path.  No-op unless enabled.
+		if (RenderD3D11::bEnabled() && bTargetMainScreen())
+		{
+			if (RenderD3D11::bBeginFrame(prasScreen->iWidth, prasScreen->iHeight))
+			{
+				// SLICE 2: iterate paprpoly and mirror each polygon's screen-space
+				// vertices (v3Screen + tcTex + colour) and texture into
+				// RenderD3D11::SubmitPolygon.  Stubbed until the shaders land.
+				RenderD3D11::Present();
+			}
+		}
 
 		CScreenRender::DrawPolygons(paprpoly);
 	}

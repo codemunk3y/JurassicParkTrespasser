@@ -23,6 +23,7 @@ list(APPEND View_Inc
     ${CMAKE_SOURCE_DIR}/source/Lib/View/RasterD3D.hpp
     ${CMAKE_SOURCE_DIR}/source/Lib/View/RasterFile.hpp
     ${CMAKE_SOURCE_DIR}/source/Lib/View/RasterPool.hpp
+    ${CMAKE_SOURCE_DIR}/Source/Lib/View/RenderD3D11.hpp
     ${CMAKE_SOURCE_DIR}/Source/Lib/View/RasterVid.hpp
     ${CMAKE_SOURCE_DIR}/source/Lib/View/Viewport.hpp
     ${CMAKE_SOURCE_DIR}/Source/Lib/View/ColourT.hpp
@@ -53,6 +54,7 @@ list(APPEND View_Src
     ${CMAKE_SOURCE_DIR}/Source/Lib/View/RasterD3D.cpp
     ${CMAKE_SOURCE_DIR}/Source/Lib/View/RasterFile.cpp
     ${CMAKE_SOURCE_DIR}/Source/Lib/View/RasterPool.cpp
+    ${CMAKE_SOURCE_DIR}/Source/Lib/View/RenderD3D11.cpp
     ${CMAKE_SOURCE_DIR}/Source/Lib/View/W95/RasterVid.cpp
     ${CMAKE_SOURCE_DIR}/Source/Lib/View/W95/Video.cpp
     ${CMAKE_SOURCE_DIR}/Source/Lib/View/Viewport.cpp

@@ -30,6 +30,7 @@
 #include "..\Lib\EntityDBase\MessageTypes\MsgStep.hpp"
 #include "..\Game\AI\AIMain.hpp"
 #include "..\Lib\Sys\Profile.hpp"
+#include "..\Lib\View\RenderD3D11.hpp"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -840,6 +841,11 @@ void CGameWnd::DrawWndInfo(CRaster * pRaster, RECT * prc)
     }
     else
     {
+	    // EXPERIMENTAL D3D11 PRESENT (env TRESPASS_D3D11): hand the backend the game
+	    // window so it can lazily create its device/swap chain on it.  No-op unless
+	    // enabled; idempotent.
+	    RenderD3D11::SetWindow(g_hwnd);
+
 	    gmlGameLoop.Paint();
 
 	    // PROFILER DUMP (DIAGNOSTIC, env TRESPASS_PROFILE): the render pipeline

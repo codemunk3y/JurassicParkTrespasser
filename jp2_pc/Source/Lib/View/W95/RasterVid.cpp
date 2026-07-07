@@ -74,6 +74,7 @@
 #include "Lib/W95/Direct3D.hpp"
 #include "Lib/Std/PrivSelf.hpp"
 #include "Lib/Renderer/ScreenRenderAuxD3D.hpp"
+#include "Lib/View/RenderD3D11.hpp"
 #include "Lib/W95/Direct3DCards.hpp"
 
 //
@@ -1468,8 +1469,16 @@ rptr<CRaster> prasReadBMP(const char* str_bitmap_name, bool b_vid)
 	}
 
 	//******************************************************************************************
-	void CRasterWin::Flip() 
+	void CRasterWin::Flip()
 	{
+		// EXPERIMENTAL D3D11 PRESENT (env TRESPASS_D3D11): when the D3D11 backend is live
+		// it owns presentation (it presents the scene through its own DXGI swap chain in
+		// CScreenRenderDWI::DrawPolygons).  Skip the software GDI present so the two don't
+		// fight over the window.  bActive() is only true once the device actually created,
+		// so a D3D11 init failure falls back to the software present below.
+		if (RenderD3D11::bActive())
+			return;
+
 		// If single surface, return.
 		if (pddsPrimary == pddsDraw)
 			return;
