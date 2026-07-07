@@ -411,9 +411,37 @@ public:
 		{
 			if (RenderD3D11::bBeginFrame(prasScreen->iWidth, prasScreen->iHeight))
 			{
-				// SLICE 2: iterate paprpoly and mirror each polygon's screen-space
-				// vertices (v3Screen + tcTex + colour) and texture into
-				// RenderD3D11::SubmitPolygon.  Stubbed until the shaders land.
+				// Mirror each polygon's screen-space vertices into the D3D11 backend.
+				// Slice 2a: flat-shade in the texture's representative colour
+				// (d3dpixColour); texture sampling + perspective-correct UV come in 2b.
+				for (int i_poly = 0; i_poly < (int)paprpoly.uLen; ++i_poly)
+				{
+					CRenderPolygon* prp = paprpoly[i_poly];
+					if (!prp || prp->bPrerasterized)
+						continue;
+					int i_n = (int)prp->paprvPolyVertices.uLen;
+					if (i_n < 3 || !prp->ptexTexture)
+						continue;
+
+					// d3dpixColour is 0x00RRGGBB; force opaque alpha for the flat draw.
+					uint32 u4_col = (uint32)prp->ptexTexture->d3dpixColour | 0xFF000000;
+
+					RenderD3D11::SVert av[64];
+					if (i_n > 64)
+						i_n = 64;
+					for (int iv = 0; iv < i_n; ++iv)
+					{
+						SRenderVertex* prv = prp->paprvPolyVertices[iv];
+						av[iv].fSX     = prv->v3Screen.tX;
+						av[iv].fSY     = prv->v3Screen.tY;
+						av[iv].fSZ     = 0.5f;
+						av[iv].fInvW   = prv->v3Screen.tZ;
+						av[iv].u4Color = u4_col;
+						av[iv].fU      = prv->tcTex.tX;
+						av[iv].fV      = prv->tcTex.tY;
+					}
+					RenderD3D11::SubmitPolygon(av, i_n, 0);
+				}
 				RenderD3D11::Present();
 			}
 		}
