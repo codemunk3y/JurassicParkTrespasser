@@ -457,6 +457,7 @@ public:
 					bool b_bumpcol = b_bump && pras && pras->iWidth > 0;
 
 					void*  p_texhandle = 0;
+					void*  p_normalhandle = 0;		// bump surfaces only: object-space normal map
 					uint32 u4_col      = 0xFFFFFFFF;
 					bool   b_clamp     = false;
 					// Terrain: dynamic atlas pages, and already lit during page compositing
@@ -470,9 +471,13 @@ public:
 						// Static world textures are persistent and cached by CTexture
 						// address; terrain is dynamic and re-uploaded every frame.
 						if (!b_terrain)
+						{
 							p_texhandle = RenderD3D11::GetTexture(ptex);
+							if (b_bumpcol)
+								p_normalhandle = RenderD3D11::GetNormalTexture(ptex);
+						}
 
-						if (b_terrain || !p_texhandle)
+						if (b_terrain || !p_texhandle || (b_bumpcol && !p_normalhandle))
 						{
 							// Colour-keyed textures (erfTRANSPARENT) use texel 0 as transparent.
 							// The flag can live on the polygon face or the texture itself.
@@ -480,6 +485,7 @@ public:
 							                ptex->seterfFeatures[erfTRANSPARENT];
 							int i_w = pras->iWidth, i_h = pras->iHeight, i_lp = pras->iLinePixels;
 							static std::vector<uint32> s_scratch;
+							static std::vector<uint32> s_normscratch;		// bump normal map
 							s_scratch.resize((size_t)i_w * i_h);
 
 							pras->Lock();
@@ -552,14 +558,18 @@ public:
 							{
 								// Bump texels are 16-bit CBumpAnglePair; the low bits hold the
 								// angle pair, the high bits a base-colour index (0 = transparent).
-								// pxf.clrFromPixel extracts the base colour.  Use iLineBytes() for
-								// the row stride (the bump raster's pixel-format bit count does not
-								// necessarily match the 2-byte texel size).
+								// pxf.clrFromPixel extracts the base colour; dir3MakeNormal decodes
+								// the object-space surface normal, which we encode into a normal
+								// map (nx->R, ny->G, nz->B) for per-pixel N.L in the bump shader.
+								// Use iLineBytes() for the row stride (the bump raster's pixel-
+								// format bit count does not necessarily match the 2-byte texel size).
+								s_normscratch.resize((size_t)i_w * i_h);
 								int i_pitch_b = pras->iLineBytes();
 								for (int y = 0; y < i_h; ++y)
 								{
 									const uint16* pu2_row = (const uint16*)(pu1_base + (size_t)y * i_pitch_b);
 									uint32*       pu4_dst = &s_scratch[(size_t)y * i_w];
+									uint32*       pu4_nrm = &s_normscratch[(size_t)y * i_w];
 									for (int x = 0; x < i_w; ++x)
 									{
 										CBumpAnglePair bang(pu2_row[x]);
@@ -567,6 +577,12 @@ public:
 											pu4_dst[x] = 0;			// transparent bump texel
 										else
 											pu4_dst[x] = (pras->pxf.clrFromPixel(bang).u4Value & 0x00FFFFFF) | 0xFF000000u;
+
+										CDir3<> n = bang.dir3MakeNormal();
+										uint32 nr = (uint32)MinMax((int)((n.tX * 0.5f + 0.5f) * 255.0f + 0.5f), 0, 255);
+										uint32 ng = (uint32)MinMax((int)((n.tY * 0.5f + 0.5f) * 255.0f + 0.5f), 0, 255);
+										uint32 nb = (uint32)MinMax((int)((n.tZ * 0.5f + 0.5f) * 255.0f + 0.5f), 0, 255);
+										pu4_nrm[x] = 0xFF000000u | (nr << 16) | (ng << 8) | nb;
 									}
 								}
 							}
@@ -580,6 +596,10 @@ public:
 								p_texhandle = b_terrain
 								            ? RenderD3D11::UpdateDynamicTexture(ptex, i_w, i_h, &s_scratch[0])
 								            : RenderD3D11::CreateTexture(ptex, i_w, i_h, &s_scratch[0]);
+
+							// Upload the decoded normal map for the bump shader (cached per texture).
+							if (b_bumpcol)
+								p_normalhandle = RenderD3D11::CreateNormalTexture(ptex, i_w, i_h, &s_normscratch[0]);
 						}
 					}
 					else
@@ -632,7 +652,38 @@ public:
 						av[iv].fU      = prv->tcTex.tX;
 						av[iv].fV      = prv->tcTex.tY;
 					}
-					RenderD3D11::SubmitPolygon(av, i_n, p_texhandle, b_clamp);
+
+					// Bump surfaces with a decoded normal map go through the bump pipeline,
+					// which lights each texel by N.L against the polygon's own light
+					// (prp->Bump.d3Light, already in the surface's object/texture space, so
+					// no per-vertex tangent frame is needed).  Everything else uses the main
+					// textured path (with per-vertex CLUT lighting) built above.
+					if (b_bumpcol && p_texhandle && p_normalhandle)
+					{
+						float f_str = (float)prp->Bump.lvStrength;
+						float f_lx  = prp->Bump.d3Light.tX * f_str;
+						float f_ly  = prp->Bump.d3Light.tY * f_str;
+						float f_lz  = prp->Bump.d3Light.tZ * f_str;
+						float f_amb = (float)prp->Bump.lvAmbient;
+
+						RenderD3D11::SBumpVert bv[64];
+						for (int iv = 0; iv < i_n; ++iv)
+						{
+							SRenderVertex* prv = prp->paprvPolyVertices[iv];
+							bv[iv].fSX = prv->v3Screen.tX;
+							bv[iv].fSY = prv->v3Screen.tY;
+							bv[iv].fSZ = 0.5f;
+							bv[iv].fInvW = prv->v3Screen.tZ;
+							bv[iv].u4Color = 0xFFFFFFFFu;
+							bv[iv].fU = prv->tcTex.tX;
+							bv[iv].fV = prv->tcTex.tY;
+							bv[iv].fLx = f_lx; bv[iv].fLy = f_ly; bv[iv].fLz = f_lz;
+							bv[iv].fLAmbient = f_amb;
+						}
+						RenderD3D11::SubmitBumpPolygon(bv, i_n, p_texhandle, p_normalhandle, b_clamp);
+					}
+					else
+						RenderD3D11::SubmitPolygon(av, i_n, p_texhandle, b_clamp);
 				}
 				RenderD3D11::Present();
 			}

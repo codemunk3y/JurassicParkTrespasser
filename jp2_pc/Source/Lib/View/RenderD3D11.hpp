@@ -107,6 +107,33 @@ namespace RenderD3D11
 
 	//******************************************************************************************
 	//
+	// BUMP / NORMAL MAPPING.  Bump surfaces carry, per texel, a base colour and a decoded
+	// object-space surface normal; the engine hands each polygon its light already in the
+	// surface's object/texture space (CRenderPolygon::Bump.d3Light), so a plain dot(N,L)
+	// reproduces the engine's bump lighting with no per-vertex tangent frame.  This is a
+	// separate pipeline (own vertex format + shaders + normal-map SRV) so the main textured
+	// path is untouched.
+	//
+	struct SBumpVert
+	{
+		float        fSX, fSY, fSZ, fInvW;	// Screen pos + rhw (as SVert).
+		unsigned int u4Color;				// Unused for bump (kept for layout parity).
+		float        fU, fV;				// Texture coordinates, [0,1].
+		float        fLx, fLy, fLz;			// Object/texture-space light direction * strength.
+		float        fLAmbient;				// Ambient light term.
+	};
+
+	// Normal-map SRV cache, parallel to the colour texture cache and keyed the same way
+	// (the CTexture address).  The normal map is decoded once (object-space normals encoded
+	// into RGB) and reused; only the per-polygon light varies (carried per SBumpVert).
+	void* GetNormalTexture(const void* p_key);
+	void* CreateNormalTexture(const void* p_key, int i_width, int i_height, const unsigned int* pu4_rgb_normal);
+
+	// Submit a bump polygon (triangle fan) with its colour SRV (t0) and normal SRV (t1).
+	void SubmitBumpPolygon(const SBumpVert* pav_verts, int i_count, void* p_colour, void* p_normal, bool b_clamp);
+
+	//******************************************************************************************
+	//
 	// Submit one screen-space polygon (triangle fan of i_count vertices) with its texture.
 	//
 	// SLICE 2 (not yet implemented): append to a dynamic vertex buffer and issue the draw

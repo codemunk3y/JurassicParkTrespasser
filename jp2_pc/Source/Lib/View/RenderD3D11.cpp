@@ -55,6 +55,14 @@ namespace
 	ID3D11ShaderResourceView* s_pWhiteSRV     = 0;	// 1x1 white for untextured polys
 	UINT                     s_vb_capacity    = 0;
 
+	// ---- Bump pipeline (separate so the main path is untouched) --------------------------
+	ID3D11VertexShader*      s_pBumpVS        = 0;
+	ID3D11PixelShader*       s_pBumpPS        = 0;
+	ID3D11InputLayout*       s_pBumpLayout    = 0;
+	ID3D11Buffer*            s_pBumpVB        = 0;
+	UINT                     s_bumpvb_capacity = 0;
+	ID3D11ShaderResourceView* s_pFlatNormSRV  = 0;	// 1x1 (0,0,1) fallback normal
+
 	int   s_i_enabled    = -1;
 	bool  s_b_init_tried = false;
 	bool  s_b_active     = false;
@@ -70,6 +78,14 @@ namespace
 
 	// CTexture* -> SRV.  Static-world textures are persistent, so a grow-only cache is fine.
 	std::unordered_map<const void*, ID3D11ShaderResourceView*> s_tex_cache;
+
+	// CTexture* -> normal-map SRV, for bump surfaces (decoded once, reused).
+	std::unordered_map<const void*, ID3D11ShaderResourceView*> s_norm_cache;
+
+	// This frame's bump triangles + batches (one per colour+normal+sampler run).
+	std::vector<RenderD3D11::SBumpVert> s_bump_verts;
+	struct SBumpBatch { ID3D11ShaderResourceView* pCol; ID3D11ShaderResourceView* pNrm; UINT u_start; UINT u_count; bool b_clamp; };
+	std::vector<SBumpBatch> s_bump_batches;
 
 	// Dynamic (terrain) textures: contents change per frame and CTexture objects recycle,
 	// so keep a persistent DYNAMIC gpu texture per key and re-upload its pixels each frame.
@@ -104,6 +120,38 @@ namespace
 		"  float4 c = gTex.Sample(gSmp, i.uv) * i.col;\n"
 		"  clip(c.a - 0.003);\n"     // discard colour-key holes so they don't write depth
 		"  return c;\n"
+		"}\n";
+
+	// Bump VS: same screen->clip transform as the main VS, but also carries the per-polygon
+	// object/texture-space light (dir*strength in .xyz, ambient in .w) to the pixel shader.
+	const char* k_psz_bump_vs =
+		"cbuffer CbView : register(b0) { float4 gViewParams; }\n"
+		"struct VSIn  { float4 sr : POSITION; float4 col : COLOR0; float2 uv : TEXCOORD0; float4 light : TEXCOORD1; };\n"
+		"struct VSOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; float4 light : TEXCOORD1; };\n"
+		"VSOut main(VSIn i) {\n"
+		"  float w = 1.0 / max(i.sr.w, 1e-6);\n"
+		"  float ndcx = i.sr.x * gViewParams.x - 1.0;\n"
+		"  float ndcy = 1.0 - i.sr.y * gViewParams.y;\n"
+		"  float d = clamp(i.sr.w, 0.0, 0.99);\n"
+		"  VSOut o;\n"
+		"  o.pos = float4(ndcx * w, ndcy * w, d * w, w);\n"
+		"  o.uv = i.uv;\n"
+		"  o.light = i.light;\n"
+		"  return o;\n"
+		"}\n";
+
+	// Bump PS: sample base colour (t0) + object-space normal (t1); light = ambient + N.L.
+	const char* k_psz_bump_ps =
+		"Texture2D    gTex : register(t0);\n"
+		"Texture2D    gNrm : register(t1);\n"
+		"SamplerState gSmp : register(s0);\n"
+		"struct VSOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; float4 light : TEXCOORD1; };\n"
+		"float4 main(VSOut i) : SV_Target {\n"
+		"  float4 base = gTex.Sample(gSmp, i.uv);\n"
+		"  clip(base.a - 0.003);\n"
+		"  float3 n = normalize(gNrm.Sample(gSmp, i.uv).rgb * 2.0 - 1.0);\n"
+		"  float lit = saturate(i.light.w + max(0.0, dot(n, i.light.xyz)));\n"
+		"  return float4(base.rgb * lit, base.a);\n"
 		"}\n";
 
 	inline void Log(const char* psz) { OutputDebugStringA(psz); }
@@ -294,6 +342,45 @@ namespace
 		s_pWhiteSRV = CreateSRVFromBGRA(1, 1, &u_white);
 		if (!s_pWhiteSRV) { Log("TRESPASS_D3D11: white texture FAILED\n"); return; }
 
+		// ---- Bump pipeline ------------------------------------------------------------------
+		// Non-fatal: if any of this fails, bump surfaces just fall back to the main path
+		// (base colour, no relief) - so guard each step but don't abort the whole pipeline.
+		{
+			ID3DBlob* p_bvs = 0; ID3DBlob* p_bps = 0; ID3DBlob* p_berr = 0;
+			if (SUCCEEDED(D3DCompile(k_psz_bump_vs, strlen(k_psz_bump_vs), "bvs", 0, 0, "main", "vs_4_0", 0, 0, &p_bvs, &p_berr)))
+			{
+				if (p_berr) { p_berr->Release(); p_berr = 0; }
+				if (SUCCEEDED(D3DCompile(k_psz_bump_ps, strlen(k_psz_bump_ps), "bps", 0, 0, "main", "ps_4_0", 0, 0, &p_bps, &p_berr)))
+				{
+					if (p_berr) { p_berr->Release(); p_berr = 0; }
+					if (SUCCEEDED(s_pd3dDevice->CreateVertexShader(p_bvs->GetBufferPointer(), p_bvs->GetBufferSize(), 0, &s_pBumpVS)) &&
+					    SUCCEEDED(s_pd3dDevice->CreatePixelShader (p_bps->GetBufferPointer(), p_bps->GetBufferSize(), 0, &s_pBumpPS)))
+					{
+						D3D11_INPUT_ELEMENT_DESC a_belem[] =
+						{
+							{ "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0,  0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+							{ "COLOR",    0, DXGI_FORMAT_B8G8R8A8_UNORM,     0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+							{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 20, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+							{ "TEXCOORD", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 28, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+						};
+						s_pd3dDevice->CreateInputLayout(a_belem, 4, p_bvs->GetBufferPointer(), p_bvs->GetBufferSize(), &s_pBumpLayout);
+					}
+					p_bps->Release();
+				}
+				else if (p_berr) { Log("TRESPASS_D3D11: bump PS compile FAILED\n"); Log((const char*)p_berr->GetBufferPointer()); p_berr->Release(); }
+				p_bvs->Release();
+			}
+			else if (p_berr) { Log("TRESPASS_D3D11: bump VS compile FAILED\n"); Log((const char*)p_berr->GetBufferPointer()); p_berr->Release(); }
+
+			const unsigned int u_flatnorm = 0xFF8080FF;	// 0xAARRGGBB: R=0x80,G=0x80,B=0xFF -> n=(0,0,1)
+			s_pFlatNormSRV = CreateSRVFromBGRA(1, 1, &u_flatnorm);
+
+			if (s_pBumpVS && s_pBumpPS && s_pBumpLayout && s_pFlatNormSRV)
+				Log("TRESPASS_D3D11: bump pipeline built\n");
+			else
+				Log("TRESPASS_D3D11: bump pipeline unavailable (falling back to flat bump colour)\n");
+		}
+
 		Log("TRESPASS_D3D11: pipeline built (slice 2b: textured)\n");
 	}
 
@@ -311,18 +398,40 @@ namespace
 		return true;
 	}
 
+	bool bEnsureBumpVB(UINT u_needed)
+	{
+		if (s_pBumpVB && s_bumpvb_capacity >= u_needed) return true;
+		if (s_pBumpVB) { s_pBumpVB->Release(); s_pBumpVB = 0; }
+		UINT u_cap = s_bumpvb_capacity ? s_bumpvb_capacity : 4096;
+		while (u_cap < u_needed) u_cap *= 2;
+		D3D11_BUFFER_DESC bd; ZeroMemory(&bd, sizeof(bd));
+		bd.ByteWidth = u_cap * sizeof(RenderD3D11::SBumpVert);
+		bd.Usage = D3D11_USAGE_DYNAMIC; bd.BindFlags = D3D11_BIND_VERTEX_BUFFER; bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+		if (FAILED(s_pd3dDevice->CreateBuffer(&bd, 0, &s_pBumpVB))) { Log("TRESPASS_D3D11: CreateBuffer(bump vb) FAILED\n"); s_bumpvb_capacity = 0; return false; }
+		s_bumpvb_capacity = u_cap;
+		return true;
+	}
+
 	void Shutdown_Internal()
 	{
 		if (s_pd3dContext) s_pd3dContext->ClearState();
 		for (std::unordered_map<const void*, ID3D11ShaderResourceView*>::iterator it = s_tex_cache.begin(); it != s_tex_cache.end(); ++it)
 			if (it->second) it->second->Release();
 		s_tex_cache.clear();
+		for (std::unordered_map<const void*, ID3D11ShaderResourceView*>::iterator it = s_norm_cache.begin(); it != s_norm_cache.end(); ++it)
+			if (it->second) it->second->Release();
+		s_norm_cache.clear();
 		for (std::unordered_map<const void*, SDynTex>::iterator it = s_dyn_cache.begin(); it != s_dyn_cache.end(); ++it)
 		{
 			if (it->second.pSRV) it->second.pSRV->Release();
 			if (it->second.pTex) it->second.pTex->Release();
 		}
 		s_dyn_cache.clear();
+		if (s_pFlatNormSRV)   { s_pFlatNormSRV->Release();   s_pFlatNormSRV   = 0; }
+		if (s_pBumpVB)        { s_pBumpVB->Release();        s_pBumpVB        = 0; }
+		if (s_pBumpLayout)    { s_pBumpLayout->Release();    s_pBumpLayout    = 0; }
+		if (s_pBumpPS)        { s_pBumpPS->Release();        s_pBumpPS        = 0; }
+		if (s_pBumpVS)        { s_pBumpVS->Release();        s_pBumpVS        = 0; }
 		if (s_pWhiteSRV)      { s_pWhiteSRV->Release();      s_pWhiteSRV      = 0; }
 		if (s_pBlend)         { s_pBlend->Release();         s_pBlend         = 0; }
 		if (s_pSampClamp)     { s_pSampClamp->Release();     s_pSampClamp     = 0; }
@@ -340,7 +449,7 @@ namespace
 		if (s_pSwapChain)     { s_pSwapChain->Release();     s_pSwapChain     = 0; }
 		if (s_pd3dContext)    { s_pd3dContext->Release();    s_pd3dContext    = 0; }
 		if (s_pd3dDevice)     { s_pd3dDevice->Release();     s_pd3dDevice     = 0; }
-		s_vb_capacity = 0; s_b_active = false; s_b_pipeline = false;
+		s_vb_capacity = 0; s_bumpvb_capacity = 0; s_b_active = false; s_b_pipeline = false;
 	}
 }
 
@@ -402,6 +511,20 @@ namespace RenderD3D11
 		return (void*)p_srv;
 	}
 
+	void* GetNormalTexture(const void* p_key)
+	{
+		std::unordered_map<const void*, ID3D11ShaderResourceView*>::iterator it = s_norm_cache.find(p_key);
+		return it != s_norm_cache.end() ? (void*)it->second : 0;
+	}
+
+	void* CreateNormalTexture(const void* p_key, int i_width, int i_height, const unsigned int* pu4_rgb_normal)
+	{
+		if (!s_pd3dDevice || i_width < 1 || i_height < 1) return 0;
+		ID3D11ShaderResourceView* p_srv = CreateSRVFromBGRA(i_width, i_height, pu4_rgb_normal);
+		s_norm_cache[p_key] = p_srv;		// cache even null so we don't retry a bad texture
+		return (void*)p_srv;
+	}
+
 	void* UpdateDynamicTexture(const void* p_key, int i_width, int i_height, const unsigned int* pu4_bgra)
 	{
 		if (!s_pd3dDevice || i_width < 1 || i_height < 1) return 0;
@@ -451,6 +574,8 @@ namespace RenderD3D11
 
 		s_verts.clear();
 		s_batches.clear();
+		s_bump_verts.clear();
+		s_bump_batches.clear();
 
 		s_pd3dContext->OMSetRenderTargets(1, &s_pBackBufferRTV, s_pDSV);
 		s_pd3dContext->OMSetDepthStencilState(s_pDepthState, 0);
@@ -510,6 +635,33 @@ namespace RenderD3D11
 		}
 	}
 
+	void SubmitBumpPolygon(const SBumpVert* pav_verts, int i_count, void* p_colour, void* p_normal, bool b_clamp)
+	{
+		if (i_count < 3 || !s_pBumpVS || !s_pBumpLayout) return;
+
+		ID3D11ShaderResourceView* p_col = p_colour ? (ID3D11ShaderResourceView*)p_colour : s_pWhiteSRV;
+		ID3D11ShaderResourceView* p_nrm = p_normal ? (ID3D11ShaderResourceView*)p_normal : s_pFlatNormSRV;
+		UINT u_before = (UINT)s_bump_verts.size();
+
+		for (int k = 2; k < i_count; ++k)
+		{
+			s_bump_verts.push_back(pav_verts[0]);
+			s_bump_verts.push_back(pav_verts[k - 1]);
+			s_bump_verts.push_back(pav_verts[k]);
+		}
+		UINT u_added = (UINT)s_bump_verts.size() - u_before;
+		if (!u_added) return;
+
+		if (!s_bump_batches.empty() && s_bump_batches.back().pCol == p_col &&
+		    s_bump_batches.back().pNrm == p_nrm && s_bump_batches.back().b_clamp == b_clamp)
+			s_bump_batches.back().u_count += u_added;
+		else
+		{
+			SBumpBatch b; b.pCol = p_col; b.pNrm = p_nrm; b.u_start = u_before; b.u_count = u_added; b.b_clamp = b_clamp;
+			s_bump_batches.push_back(b);
+		}
+	}
+
 	void Present()
 	{
 		if (!bActive() || !s_pSwapChain) return;
@@ -536,6 +688,35 @@ namespace RenderD3D11
 					s_pd3dContext->PSSetSamplers(0, 1, &p_samp);
 					s_pd3dContext->PSSetShaderResources(0, 1, &s_batches[i].pSRV);
 					s_pd3dContext->Draw(s_batches[i].u_count, s_batches[i].u_start);
+				}
+			}
+		}
+
+		// Bump pass: object-space normal mapping.  Opaque/cutout (the PS clips holes) and the
+		// depth buffer resolves ordering, so drawing after the main batches is fine.
+		if (!s_bump_verts.empty() && s_pBumpVS && s_pBumpLayout && bEnsureBumpVB((UINT)s_bump_verts.size()))
+		{
+			D3D11_MAPPED_SUBRESOURCE ms;
+			if (SUCCEEDED(s_pd3dContext->Map(s_pBumpVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms)))
+			{
+				memcpy(ms.pData, &s_bump_verts[0], s_bump_verts.size() * sizeof(SBumpVert));
+				s_pd3dContext->Unmap(s_pBumpVB, 0);
+
+				UINT u_stride = sizeof(SBumpVert), u_offset = 0;
+				s_pd3dContext->IASetInputLayout(s_pBumpLayout);
+				s_pd3dContext->IASetVertexBuffers(0, 1, &s_pBumpVB, &u_stride, &u_offset);
+				s_pd3dContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+				s_pd3dContext->VSSetShader(s_pBumpVS, 0, 0);
+				s_pd3dContext->VSSetConstantBuffers(0, 1, &s_pCB);
+				s_pd3dContext->PSSetShader(s_pBumpPS, 0, 0);
+
+				for (size_t i = 0; i < s_bump_batches.size(); ++i)
+				{
+					ID3D11SamplerState* p_samp = s_bump_batches[i].b_clamp ? s_pSampClamp : s_pSampWrap;
+					s_pd3dContext->PSSetSamplers(0, 1, &p_samp);
+					ID3D11ShaderResourceView* ap_srv[2] = { s_bump_batches[i].pCol, s_bump_batches[i].pNrm };
+					s_pd3dContext->PSSetShaderResources(0, 2, ap_srv);
+					s_pd3dContext->Draw(s_bump_batches[i].u_count, s_bump_batches[i].u_start);
 				}
 			}
 		}
