@@ -711,9 +711,18 @@ void GrowBumpEdges(rptr<CRaster> pras_new);
 		// non-tiling replacement makes them repeat/smear.  Terrain still uses its own
 		// texturing subsystem, whose fixed-size page compositing this breaks, so
 		// terrain surfaces show artifacts - a known limitation of this experiment.
+		// When the D3D11 backend is active it performs the hi-res side-load itself, on the
+		// GPU (RenderD3D11::CreateTextureHiRes), which is more robust than this CPU path:
+		// it leaves the engine's stable 256 raster untouched (no VM-raster streaming crash),
+		// handles tiling textures, and doesn't disturb terrain page compositing.  So disable
+		// this CPU injection whenever TRESPASS_D3D11 is set - the GPU path takes over.
 		static int s_i_hires = -1;
 		if (s_i_hires < 0)
-			s_i_hires = GetEnvironmentVariableA("TRESPASS_HIRES", 0, 0) > 0 ? 1 : 0;
+		{
+			bool b_hires  = GetEnvironmentVariableA("TRESPASS_HIRES", 0, 0) > 0;
+			bool b_d3d11  = GetEnvironmentVariableA("TRESPASS_D3D11", 0, 0) > 0;
+			s_i_hires = (b_hires && !b_d3d11) ? 1 : 0;
+		}
 
 		rptr<CRaster> pras_attach = pras;
 		if (s_i_hires && pras && pras->iPixelBits == 16 &&

@@ -478,7 +478,29 @@ public:
 
 							pras->Lock();
 							const uint8* pu1_base = (const uint8*)pras->pSurface;
-							if (pu1_base && b_pal8)
+
+							// Hi-res GPU side-load (env TRESPASS_HIRES): for static, opaque
+							// textures, display an AI-upscaled image in place of the stock
+							// 256-cap texture.  The GPU samples normalised [0,1] UVs, so this
+							// needs no geometry/UV change and works for tiling textures too
+							// (unlike the CPU rasteriser).  Matched to the asset by the same
+							// FNV-1a content hash the texture exporter uses to name the BMPs.
+							void* p_hires = 0;
+							if (!b_terrain && !b_transp && pu1_base && RenderD3D11::bHiResEnabled())
+							{
+								uint32 u4_hash = 2166136261u;			// FNV-1a
+								int    i_bpr   = i_w * (pras->iPixelBits >> 3);
+								int    i_pitch = pras->iLineBytes();
+								for (int y = 0; y < i_h; ++y)
+								{
+									const uint8* pb = pu1_base + (size_t)y * i_pitch;
+									for (int b = 0; b < i_bpr; ++b)
+										u4_hash = (u4_hash ^ pb[b]) * 16777619u;
+								}
+								p_hires = RenderD3D11::CreateTextureHiRes(ptex, u4_hash);
+							}
+
+							if (!p_hires && pu1_base && b_pal8)
 							{
 								const CPal* ppal   = ppal_tex;
 								int         i_npal = (int)ppal->aclrPalette.uLen;
@@ -504,7 +526,7 @@ public:
 									}
 								}
 							}
-							else if (pu1_base)		// b_rgb16
+							else if (!p_hires && pu1_base)		// b_rgb16
 							{
 								for (int y = 0; y < i_h; ++y)
 								{
@@ -522,9 +544,14 @@ public:
 							}
 							pras->Unlock();
 
-							p_texhandle = b_terrain
-							            ? RenderD3D11::UpdateDynamicTexture(ptex, i_w, i_h, &s_scratch[0])
-							            : RenderD3D11::CreateTexture(ptex, i_w, i_h, &s_scratch[0]);
+							// CreateTextureHiRes already cached the hi-res SRV under ptex;
+							// otherwise upload the freshly-decoded stock texture.
+							if (p_hires)
+								p_texhandle = p_hires;
+							else
+								p_texhandle = b_terrain
+								            ? RenderD3D11::UpdateDynamicTexture(ptex, i_w, i_h, &s_scratch[0])
+								            : RenderD3D11::CreateTexture(ptex, i_w, i_h, &s_scratch[0]);
 						}
 					}
 					else

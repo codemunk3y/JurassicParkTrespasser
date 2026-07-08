@@ -85,6 +85,21 @@ namespace RenderD3D11
 	void* GetTexture(const void* p_key);
 	void* CreateTexture(const void* p_key, int i_width, int i_height, const unsigned int* pu4_bgra);
 
+	//******************************************************************************************
+	//
+	// HI-RES TEXTURE SIDE-LOAD (env TRESPASS_HIRES).  The GPU samples normalised [0,1] UVs,
+	// so an upscaled image can be displayed for a texture with no change to geometry or UVs,
+	// and - unlike the CPU rasteriser - regardless of the 256 tiling cap (the wrap sampler
+	// handles any resolution).  bHiResEnabled() reports whether the feature is on (cached).
+	// CreateTextureHiRes looks for hires\<u4_hash>.bmp (a 24-bit BMP whose name is the
+	// exporter's FNV-1a content hash of the source texture); if present it uploads that image
+	// at its native resolution, caches it under p_key, and returns the handle.  Returns null
+	// (and caches nothing) when the feature is off or no hi-res asset exists, so the caller
+	// falls back to the normal texture decode.
+	//
+	bool  bHiResEnabled();
+	void* CreateTextureHiRes(const void* p_key, unsigned int u4_hash);
+
 	// For DYNAMIC textures (terrain atlas pages) whose contents change every frame and
 	// whose CTexture objects are recycled: re-uploads the pixels into a persistent dynamic
 	// GPU texture (created/resized as needed) and returns its handle.  Call every frame.

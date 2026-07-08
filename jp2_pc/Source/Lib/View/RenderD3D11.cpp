@@ -20,6 +20,7 @@
 #include <d3d11.h>
 #include <dxgi.h>
 #include <d3dcompiler.h>
+#include <stdio.h>
 #include <vector>
 #include <unordered_map>
 
@@ -180,6 +181,49 @@ namespace
 		return SUCCEEDED(hr) ? p_srv : 0;
 	}
 
+	int s_i_hires = -1;		// TRESPASS_HIRES cache (-1 = not yet queried)
+
+	// Load a 24-bit BMP into a top-down BGRA (0xFFRRGGBB) buffer.  Used for the hi-res
+	// texture side-load: these are the AI-upscaled BMPs named by the source texture's
+	// content hash.  Returns false (buffer untouched) if the file is missing/unreadable
+	// or not a 24-bit BMP.  Opaque only (no colour key) - alpha is forced to 0xFF.
+	bool LoadBmp24ToBGRA(const char* psz_path, std::vector<unsigned int>& out, int& i_w, int& i_h)
+	{
+		FILE* f = fopen(psz_path, "rb");
+		if (!f) return false;
+
+		BITMAPFILEHEADER bfh; BITMAPINFOHEADER bih;
+		if (fread(&bfh, sizeof(bfh), 1, f) != 1 || fread(&bih, sizeof(bih), 1, f) != 1 ||
+		    bfh.bfType != 0x4D42 || bih.biBitCount != 24 || bih.biCompression != BI_RGB)
+		{ fclose(f); return false; }
+
+		int  w = bih.biWidth;
+		int  h = bih.biHeight < 0 ? -bih.biHeight : bih.biHeight;
+		bool b_topdown = bih.biHeight < 0;
+		if (w <= 0 || h <= 0 || w > 4096 || h > 4096) { fclose(f); return false; }
+
+		int i_rowbytes = (w * 3 + 3) & ~3;			// BMP rows are 4-byte aligned
+		out.resize((size_t)w * h);
+		std::vector<unsigned char> row((size_t)i_rowbytes);
+		fseek(f, bfh.bfOffBits, SEEK_SET);
+		bool b_ok = true;
+		for (int i = 0; i < h; ++i)
+		{
+			if (fread(&row[0], i_rowbytes, 1, f) != 1) { b_ok = false; break; }
+			int y = b_topdown ? i : (h - 1 - i);	// store top-down for D3D
+			unsigned int* pd = &out[(size_t)y * w];
+			for (int x = 0; x < w; ++x)
+			{
+				unsigned int b = row[x * 3 + 0], g = row[x * 3 + 1], r = row[x * 3 + 2];
+				pd[x] = 0xFF000000u | (r << 16) | (g << 8) | b;
+			}
+		}
+		fclose(f);
+		if (!b_ok) return false;
+		i_w = w; i_h = h;
+		return true;
+	}
+
 	void TryBuildPipeline()
 	{
 		s_b_pipeline = true;
@@ -328,6 +372,33 @@ namespace RenderD3D11
 		if (!s_pd3dDevice || i_width < 1 || i_height < 1) return 0;
 		ID3D11ShaderResourceView* p_srv = CreateSRVFromBGRA(i_width, i_height, pu4_bgra);
 		s_tex_cache[p_key] = p_srv;		// cache even null, so we don't retry a bad texture every frame
+		return (void*)p_srv;
+	}
+
+	bool bHiResEnabled()
+	{
+		if (s_i_hires < 0)
+			s_i_hires = GetEnvironmentVariableA("TRESPASS_HIRES", 0, 0) > 0 ? 1 : 0;
+		return s_i_hires != 0;
+	}
+
+	void* CreateTextureHiRes(const void* p_key, unsigned int u4_hash)
+	{
+		if (!s_pd3dDevice || !bHiResEnabled())
+			return 0;
+
+		char sz_path[MAX_PATH];
+		wsprintfA(sz_path, "hires\\%08lX.bmp", (unsigned long)u4_hash);
+
+		std::vector<unsigned int> bgra;
+		int i_w = 0, i_h = 0;
+		if (!LoadBmp24ToBGRA(sz_path, bgra, i_w, i_h))
+			return 0;						// no asset - caller decodes the stock texture
+
+		ID3D11ShaderResourceView* p_srv = CreateSRVFromBGRA(i_w, i_h, &bgra[0]);
+		if (!p_srv)
+			return 0;
+		s_tex_cache[p_key] = p_srv;
 		return (void*)p_srv;
 	}
 
