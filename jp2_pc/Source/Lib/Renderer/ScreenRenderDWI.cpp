@@ -151,6 +151,7 @@
 #include <crtdbg.h>
 #include "Lib/Renderer/Primitives/DrawTriangle.hpp"
 #include "Lib/Renderer/Primitives/FastBump.hpp"		// CBumpAnglePair (bump-map texel decode)
+#include "Lib/Renderer/Material.hpp"				// CMaterial::rvSpecular (bump specular)
 #include "Lib/Renderer/Sky.hpp"
 #include "Lib/W95/Direct3D.hpp"
 #include "ScreenRenderAuxD3D.hpp"
@@ -660,11 +661,18 @@ public:
 					// textured path (with per-vertex CLUT lighting) built above.
 					if (b_bumpcol && p_texhandle && p_normalhandle)
 					{
-						float f_str = (float)prp->Bump.lvStrength;
-						float f_lx  = prp->Bump.d3Light.tX * f_str;
-						float f_ly  = prp->Bump.d3Light.tY * f_str;
-						float f_lz  = prp->Bump.d3Light.tZ * f_str;
-						float f_amb = (float)prp->Bump.lvAmbient;
+						// d3Light is non-unit for specular materials (the engine folds the eye
+						// half-vector into it), so normalise the direction and carry the strength
+						// separately.  Specular intensity comes straight from the material.
+						float f_lx  = prp->Bump.d3Light.tX;
+						float f_ly  = prp->Bump.d3Light.tY;
+						float f_lz  = prp->Bump.d3Light.tZ;
+						float f_len = sqrtf(f_lx * f_lx + f_ly * f_ly + f_lz * f_lz);
+						if (f_len > 1e-6f) { f_lx /= f_len; f_ly /= f_len; f_lz /= f_len; }
+						float f_str  = (float)prp->Bump.lvStrength;
+						float f_amb  = (float)prp->Bump.lvAmbient;
+						float f_spec = (ptex->ppcePalClut && ptex->ppcePalClut->pmatMaterial)
+						             ? (float)ptex->ppcePalClut->pmatMaterial->rvSpecular : 0.0f;
 
 						RenderD3D11::SBumpVert bv[64];
 						for (int iv = 0; iv < i_n; ++iv)
@@ -678,7 +686,9 @@ public:
 							bv[iv].fU = prv->tcTex.tX;
 							bv[iv].fV = prv->tcTex.tY;
 							bv[iv].fLx = f_lx; bv[iv].fLy = f_ly; bv[iv].fLz = f_lz;
-							bv[iv].fLAmbient = f_amb;
+							bv[iv].fLStrength = f_str;
+							bv[iv].fLAmbient  = f_amb;
+							bv[iv].fSpecular  = f_spec;
 						}
 						RenderD3D11::SubmitBumpPolygon(bv, i_n, p_texhandle, p_normalhandle, b_clamp);
 					}

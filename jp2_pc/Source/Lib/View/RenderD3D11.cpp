@@ -123,11 +123,11 @@ namespace
 		"}\n";
 
 	// Bump VS: same screen->clip transform as the main VS, but also carries the per-polygon
-	// object/texture-space light (dir*strength in .xyz, ambient in .w) to the pixel shader.
+	// object/texture-space light: light1 = (unit dir.xyz, strength), light2 = (ambient, spec).
 	const char* k_psz_bump_vs =
 		"cbuffer CbView : register(b0) { float4 gViewParams; }\n"
-		"struct VSIn  { float4 sr : POSITION; float4 col : COLOR0; float2 uv : TEXCOORD0; float4 light : TEXCOORD1; };\n"
-		"struct VSOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; float4 light : TEXCOORD1; };\n"
+		"struct VSIn  { float4 sr : POSITION; float4 col : COLOR0; float2 uv : TEXCOORD0; float4 light1 : TEXCOORD1; float2 light2 : TEXCOORD2; };\n"
+		"struct VSOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; float4 light1 : TEXCOORD1; float2 light2 : TEXCOORD2; };\n"
 		"VSOut main(VSIn i) {\n"
 		"  float w = 1.0 / max(i.sr.w, 1e-6);\n"
 		"  float ndcx = i.sr.x * gViewParams.x - 1.0;\n"
@@ -136,22 +136,32 @@ namespace
 		"  VSOut o;\n"
 		"  o.pos = float4(ndcx * w, ndcy * w, d * w, w);\n"
 		"  o.uv = i.uv;\n"
-		"  o.light = i.light;\n"
+		"  o.light1 = i.light1;\n"
+		"  o.light2 = i.light2;\n"
 		"  return o;\n"
 		"}\n";
 
-	// Bump PS: sample base colour (t0) + object-space normal (t1); light = ambient + N.L.
+	// Bump PS: sample base colour (t0) + object-space normal (t1).  Diffuse = ambient +
+	// strength*N.L; add a specular lobe scaled by the material's specular (0 for matte
+	// surfaces, so rock etc. are unaffected).  The engine folds the eye half-vector into the
+	// light direction for specular materials, so N.L along that direction reads as specular.
 	const char* k_psz_bump_ps =
+		"cbuffer CbView : register(b0) { float4 gViewParams; }\n"	// .z = bump debug tint
 		"Texture2D    gTex : register(t0);\n"
 		"Texture2D    gNrm : register(t1);\n"
 		"SamplerState gSmp : register(s0);\n"
-		"struct VSOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; float4 light : TEXCOORD1; };\n"
+		"struct VSOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; float4 light1 : TEXCOORD1; float2 light2 : TEXCOORD2; };\n"
 		"float4 main(VSOut i) : SV_Target {\n"
 		"  float4 base = gTex.Sample(gSmp, i.uv);\n"
 		"  clip(base.a - 0.003);\n"
 		"  float3 n = normalize(gNrm.Sample(gSmp, i.uv).rgb * 2.0 - 1.0);\n"
-		"  float lit = saturate(i.light.w + max(0.0, dot(n, i.light.xyz)));\n"
-		"  return float4(base.rgb * lit, base.a);\n"
+		"  float ndl = max(0.0, dot(n, i.light1.xyz));\n"
+		"  float lit = saturate(i.light2.x + i.light1.w * ndl);\n"
+		"  float spec = i.light2.y * pow(saturate(ndl), 16.0);\n"
+		"  if (gViewParams.z > 0.5) {\n"				// debug: green = bump relief, red = specular material
+		"    return float4(saturate(i.light2.y * 4.0), ndl, 0.0, 1.0);\n"
+		"  }\n"
+		"  return float4(saturate(base.rgb * lit + spec), base.a);\n"
 		"}\n";
 
 	inline void Log(const char* psz) { OutputDebugStringA(psz); }
@@ -362,8 +372,9 @@ namespace
 							{ "COLOR",    0, DXGI_FORMAT_B8G8R8A8_UNORM,     0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0 },
 							{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 20, D3D11_INPUT_PER_VERTEX_DATA, 0 },
 							{ "TEXCOORD", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 28, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+							{ "TEXCOORD", 2, DXGI_FORMAT_R32G32_FLOAT,       0, 44, D3D11_INPUT_PER_VERTEX_DATA, 0 },
 						};
-						s_pd3dDevice->CreateInputLayout(a_belem, 4, p_bvs->GetBufferPointer(), p_bvs->GetBufferSize(), &s_pBumpLayout);
+						s_pd3dDevice->CreateInputLayout(a_belem, 5, p_bvs->GetBufferPointer(), p_bvs->GetBufferSize(), &s_pBumpLayout);
 					}
 					p_bps->Release();
 				}
@@ -602,8 +613,12 @@ namespace RenderD3D11
 		D3D11_MAPPED_SUBRESOURCE ms;
 		if (SUCCEEDED(s_pd3dContext->Map(s_pCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms)))
 		{
+			static int s_i_bumpdebug = -1;
+			if (s_i_bumpdebug < 0)
+				s_i_bumpdebug = GetEnvironmentVariableA("TRESPASS_BUMPDEBUG", 0, 0) > 0 ? 1 : 0;
 			float* pf = (float*)ms.pData;
-			pf[0] = 2.0f / (float)i_width; pf[1] = 2.0f / (float)i_height; pf[2] = 0.0f; pf[3] = 0.0f;
+			pf[0] = 2.0f / (float)i_width; pf[1] = 2.0f / (float)i_height;
+			pf[2] = (float)s_i_bumpdebug; pf[3] = 0.0f;
 			s_pd3dContext->Unmap(s_pCB, 0);
 		}
 		return true;
@@ -709,6 +724,7 @@ namespace RenderD3D11
 				s_pd3dContext->VSSetShader(s_pBumpVS, 0, 0);
 				s_pd3dContext->VSSetConstantBuffers(0, 1, &s_pCB);
 				s_pd3dContext->PSSetShader(s_pBumpPS, 0, 0);
+				s_pd3dContext->PSSetConstantBuffers(0, 1, &s_pCB);		// for the debug-tint flag
 
 				for (size_t i = 0; i < s_bump_batches.size(); ++i)
 				{

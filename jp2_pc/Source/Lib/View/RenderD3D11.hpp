@@ -119,8 +119,10 @@ namespace RenderD3D11
 		float        fSX, fSY, fSZ, fInvW;	// Screen pos + rhw (as SVert).
 		unsigned int u4Color;				// Unused for bump (kept for layout parity).
 		float        fU, fV;				// Texture coordinates, [0,1].
-		float        fLx, fLy, fLz;			// Object/texture-space light direction * strength.
+		float        fLx, fLy, fLz;			// Object/texture-space light direction (unit).
+		float        fLStrength;			// Directional light strength.
 		float        fLAmbient;				// Ambient light term.
+		float        fSpecular;				// Material specular intensity (rvSpecular; 0 = matte).
 	};
 
 	// Normal-map SRV cache, parallel to the colour texture cache and keyed the same way
