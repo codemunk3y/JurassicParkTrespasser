@@ -150,6 +150,7 @@
 #include "Lib/Renderer/LightBlend.hpp"
 #include <crtdbg.h>
 #include "Lib/Renderer/Primitives/DrawTriangle.hpp"
+#include "Lib/Renderer/Primitives/FastBump.hpp"		// CBumpAnglePair (bump-map texel decode)
 #include "Lib/Renderer/Sky.hpp"
 #include "Lib/W95/Direct3D.hpp"
 #include "ScreenRenderAuxD3D.hpp"
@@ -449,6 +450,11 @@ public:
 
 					bool b_pal8  = !b_bump && pras && pras->iWidth > 0 && pras->iPixelBits == 8 && ppal_tex;
 					bool b_rgb16 = !b_bump && pras && pras->iWidth > 0 && pras->iPixelBits == 16;
+					// Bump maps: each texel is a CBumpAnglePair packing a base-colour index
+					// plus a surface-normal angle pair.  Render the per-texel base colour
+					// (these surfaces previously drew flat in one representative colour); the
+					// per-texel relief lighting (N.L from the decoded normals) is the next slice.
+					bool b_bumpcol = b_bump && pras && pras->iWidth > 0;
 
 					void*  p_texhandle = 0;
 					uint32 u4_col      = 0xFFFFFFFF;
@@ -457,7 +463,7 @@ public:
 					// (they drop erfLIGHT_SHADE) - so re-upload each frame AND don't re-light.
 					bool   b_terrain   = prp->seterfFace[erfSOURCE_TERRAIN];
 
-					if (b_pal8 || b_rgb16)
+					if (b_pal8 || b_rgb16 || b_bumpcol)
 					{
 						b_clamp = pras->bNotTileable;
 
@@ -526,7 +532,7 @@ public:
 									}
 								}
 							}
-							else if (!p_hires && pu1_base)		// b_rgb16
+							else if (!p_hires && pu1_base && b_rgb16)
 							{
 								for (int y = 0; y < i_h; ++y)
 								{
@@ -539,6 +545,28 @@ public:
 											pu4_dst[x] = 0;
 										else
 											pu4_dst[x] = (pras->clrFromPixel(u2_px).u4Value & 0x00FFFFFF) | 0xFF000000u;
+									}
+								}
+							}
+							else if (!p_hires && pu1_base && b_bumpcol)
+							{
+								// Bump texels are 16-bit CBumpAnglePair; the low bits hold the
+								// angle pair, the high bits a base-colour index (0 = transparent).
+								// pxf.clrFromPixel extracts the base colour.  Use iLineBytes() for
+								// the row stride (the bump raster's pixel-format bit count does not
+								// necessarily match the 2-byte texel size).
+								int i_pitch_b = pras->iLineBytes();
+								for (int y = 0; y < i_h; ++y)
+								{
+									const uint16* pu2_row = (const uint16*)(pu1_base + (size_t)y * i_pitch_b);
+									uint32*       pu4_dst = &s_scratch[(size_t)y * i_w];
+									for (int x = 0; x < i_w; ++x)
+									{
+										CBumpAnglePair bang(pu2_row[x]);
+										if (bang.u1GetColour() == 0)
+											pu4_dst[x] = 0;			// transparent bump texel
+										else
+											pu4_dst[x] = (pras->pxf.clrFromPixel(bang).u4Value & 0x00FFFFFF) | 0xFF000000u;
 									}
 								}
 							}
