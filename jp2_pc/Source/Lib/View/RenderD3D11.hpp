@@ -75,6 +75,15 @@ namespace RenderD3D11
 
 	//******************************************************************************************
 	//
+	// Set the backbuffer clear colour (0..1).  The engine's sky is drawn into the software
+	// raster, not the polygon stream the GPU path mirrors, so the caller passes the sky's
+	// horizon/fog colour here each frame to stand in for the (not-yet-GPU) sky.  If never
+	// called, a neutral default is used.
+	//
+	void SetClearColour(float f_r, float f_g, float f_b);
+
+	//******************************************************************************************
+	//
 	// Texture cache.  Kept engine-agnostic: the caller converts the engine texture to a plain
 	// BGRA image (one 0xAARRGGBB texel each) and supplies a stable key pointer (the CTexture
 	// address).  GetTexture returns the cached opaque handle for p_key, or null if not created
@@ -84,6 +93,14 @@ namespace RenderD3D11
 	//
 	void* GetTexture(const void* p_key);
 	void* CreateTexture(const void* p_key, int i_width, int i_height, const unsigned int* pu4_bgra);
+
+	// True once a key has been through CreateTexture (even if the upload FAILED and the cached
+	// handle is null).  The caller uses this to avoid re-decoding + re-uploading a failed
+	// texture every frame - a large failing texture that way causes a white object plus a
+	// continuous per-frame stutter.  MarkTextureFailed records a known-failed key without an
+	// upload attempt (e.g. for a texture too large to be safe on the GPU).
+	bool bTextureKnown(const void* p_key);
+	void MarkTextureFailed(const void* p_key);
 
 	//******************************************************************************************
 	//
@@ -104,6 +121,10 @@ namespace RenderD3D11
 	// whose CTexture objects are recycled: re-uploads the pixels into a persistent dynamic
 	// GPU texture (created/resized as needed) and returns its handle.  Call every frame.
 	void* UpdateDynamicTexture(const void* p_key, int i_width, int i_height, const unsigned int* pu4_bgra);
+
+	// Returns a dynamic texture's handle only if it was already uploaded this frame, else null.
+	// Lets the caller skip re-decoding a terrain page that several polygons share.
+	void* GetDynamicTexture(const void* p_key);
 
 	//******************************************************************************************
 	//

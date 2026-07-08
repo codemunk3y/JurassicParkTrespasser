@@ -415,6 +415,15 @@ public:
 		// colour) to prove the device/swap-chain/present path.  No-op unless enabled.
 		if (RenderD3D11::bEnabled() && bTargetMainScreen())
 		{
+			// The sky is drawn into the software raster (not the polygon stream we mirror), so
+			// hand the GPU backbuffer the sky's horizon/fog colour to clear with - otherwise the
+			// sky region shows the raw diagnostic clear colour.
+			if (gpskyRender)
+			{
+				CColour clr_fog = gpskyRender->clrGetFogColour();
+				RenderD3D11::SetClearColour(clr_fog.u1Red / 255.0f, clr_fog.u1Green / 255.0f, clr_fog.u1Blue / 255.0f);
+			}
+
 			if (RenderD3D11::bBeginFrame(prasScreen->iWidth, prasScreen->iHeight))
 			{
 				// Mirror each polygon's screen-space vertices into the D3D11 backend.
@@ -469,16 +478,33 @@ public:
 					{
 						b_clamp = pras->bNotTileable;
 
-						// Static world textures are persistent and cached by CTexture
-						// address; terrain is dynamic and re-uploaded every frame.
-						if (!b_terrain)
+						// Static world textures are persistent and cached by CTexture address;
+						// terrain is dynamic and re-uploaded every frame.  A texture whose upload
+						// FAILED caches a null handle - treat that as "known" (bTextureKnown) so we
+						// don't re-decode + re-upload it every frame for every polygon.  That retry
+						// storm on a large failing texture was the white-object + continuous-stutter
+						// bug (the frame time blew up and starved the rest of the scene).
+						bool b_known = !b_terrain && RenderD3D11::bTextureKnown(ptex);
+						if (b_known)
 						{
 							p_texhandle = RenderD3D11::GetTexture(ptex);
 							if (b_bumpcol)
 								p_normalhandle = RenderD3D11::GetNormalTexture(ptex);
 						}
+						else if (b_terrain)
+						{
+							// A terrain page shared by several polygons only needs decoding +
+							// uploading once per frame; reuse it if a previous poly already did.
+							p_texhandle = RenderD3D11::GetDynamicTexture(ptex);
+						}
 
-						if (b_terrain || !p_texhandle || (b_bumpcol && !p_normalhandle))
+						if (!b_known && !b_terrain && (pras->iWidth > 8192 || pras->iHeight > 8192))
+						{
+							// Too large to upload safely (exceeds feature-level limits) / too
+							// expensive to decode - mark failed once and fall back to the flat path.
+							RenderD3D11::MarkTextureFailed(ptex);
+						}
+						else if (b_terrain ? !p_texhandle : !b_known)
 						{
 							// Colour-keyed textures (erfTRANSPARENT) use texel 0 as transparent.
 							// The flag can live on the polygon face or the texture itself.
@@ -695,7 +721,9 @@ public:
 					else
 						RenderD3D11::SubmitPolygon(av, i_n, p_texhandle, b_clamp);
 				}
-				RenderD3D11::Present();
+				// NB: no Present() here.  DrawPolygons runs more than once per frame (main scene
+				// + extra passes); each call accumulates into the D3D11 backend, and the single
+				// Present happens at CRasterWin::Flip (the real frame boundary).
 			}
 		}
 

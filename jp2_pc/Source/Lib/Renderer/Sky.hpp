@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive. 1997
+ * Copyright ï¿½ DreamWorks Interactive. 1997
  *
  * Contents:
  *		Sky renderer CSkyRender
@@ -198,6 +198,17 @@ public:
 	float	fGetHeight()
 	{
 		return	fSkyHeight;
+	}
+
+	//******************************************************************************************
+	// The horizon/fog colour the sky fades to.  The D3D11 backend uses this as its backbuffer
+	// clear colour: the sky is drawn straight into the software raster (textured/gradient),
+	// which the GPU path does not mirror, so without this the sky region shows the raw clear.
+	CColour clrGetFogColour()
+	{
+		if (prasRenderSurface)
+			return prasRenderSurface->clrFromPixel(u4Fog & 0x0000FFFF);
+		return CColour(0, 0, 0);
 	}
 
 	//******************************************************************************************

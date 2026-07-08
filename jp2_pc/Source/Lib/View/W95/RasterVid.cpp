@@ -1477,7 +1477,13 @@ rptr<CRaster> prasReadBMP(const char* str_bitmap_name, bool b_vid)
 		// fight over the window.  bActive() is only true once the device actually created,
 		// so a D3D11 init failure falls back to the software present below.
 		if (RenderD3D11::bActive())
+		{
+			// Flip is the real once-per-frame boundary: draw everything the DrawPolygons passes
+			// accumulated this frame and present it through the DXGI swap chain (a single clear +
+			// present per frame, instead of one per render pass).
+			RenderD3D11::Present();
 			return;
+		}
 
 		// If single surface, return.
 		if (pddsPrimary == pddsDraw)

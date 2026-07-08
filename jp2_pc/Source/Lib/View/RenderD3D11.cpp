@@ -67,9 +67,26 @@ namespace
 	bool  s_b_init_tried = false;
 	bool  s_b_active     = false;
 	bool  s_b_pipeline   = false;
+	bool  s_frame_open   = false;	// a frame is in progress (cleared, accumulating submits)
 
 	UINT  s_u_width      = 0;
 	UINT  s_u_height     = 0;
+
+	// Backbuffer clear colour.  Defaults to the old diagnostic teal; the caller overrides it
+	// each frame with the sky's fog colour (SetClearColour) so the sky region isn't teal.
+	float s_clear_r      = 0.10f;
+	float s_clear_g      = 0.35f;
+	float s_clear_b      = 0.45f;
+
+	// Diagnostic stats (written to d3d11_stats.txt): peak per-frame vertex/upload counts and
+	// any device-removed event, to find what a pathological object does to the GPU path.
+	unsigned int s_stat_max_verts     = 0;
+	unsigned int s_stat_max_bumpverts = 0;
+	unsigned int s_stat_dyn_bytes     = 0;	// dynamic-texture bytes uploaded this frame
+	unsigned int s_stat_max_dyn_bytes = 0;
+	int          s_stat_vb_fail       = 0;
+	long         s_stat_dev_removed   = 0;	// GetDeviceRemovedReason (0 = ok)
+	int          s_stat_frames        = 0;
 
 	// This frame's triangles, expanded from fans, and one draw batch per texture run.
 	std::vector<RenderD3D11::SVert> s_verts;
@@ -89,8 +106,9 @@ namespace
 
 	// Dynamic (terrain) textures: contents change per frame and CTexture objects recycle,
 	// so keep a persistent DYNAMIC gpu texture per key and re-upload its pixels each frame.
-	struct SDynTex { ID3D11Texture2D* pTex; ID3D11ShaderResourceView* pSRV; int i_w; int i_h; };
+	struct SDynTex { ID3D11Texture2D* pTex; ID3D11ShaderResourceView* pSRV; int i_w; int i_h; unsigned u_frame; };
 	std::unordered_map<const void*, SDynTex> s_dyn_cache;
+	unsigned s_frame_no = 0;	// bumped each bBeginFrame; used to upload each dyn texture once/frame
 
 	// VS: screen pixels -> clip space, reconstructing w = 1/rhw so UV/colour interpolate
 	// perspective-correctly.  gViewParams = (2/renderW, 2/renderH).  Flat depth 0.5 (no
@@ -404,7 +422,7 @@ namespace
 		D3D11_BUFFER_DESC bd; ZeroMemory(&bd, sizeof(bd));
 		bd.ByteWidth = u_cap * sizeof(RenderD3D11::SVert);
 		bd.Usage = D3D11_USAGE_DYNAMIC; bd.BindFlags = D3D11_BIND_VERTEX_BUFFER; bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-		if (FAILED(s_pd3dDevice->CreateBuffer(&bd, 0, &s_pVB))) { Log("TRESPASS_D3D11: CreateBuffer(vb) FAILED\n"); s_vb_capacity = 0; return false; }
+		if (FAILED(s_pd3dDevice->CreateBuffer(&bd, 0, &s_pVB))) { Log("TRESPASS_D3D11: CreateBuffer(vb) FAILED\n"); s_vb_capacity = 0; s_stat_vb_fail++; return false; }
 		s_vb_capacity = u_cap;
 		return true;
 	}
@@ -460,7 +478,7 @@ namespace
 		if (s_pSwapChain)     { s_pSwapChain->Release();     s_pSwapChain     = 0; }
 		if (s_pd3dContext)    { s_pd3dContext->Release();    s_pd3dContext    = 0; }
 		if (s_pd3dDevice)     { s_pd3dDevice->Release();     s_pd3dDevice     = 0; }
-		s_vb_capacity = 0; s_bumpvb_capacity = 0; s_b_active = false; s_b_pipeline = false;
+		s_vb_capacity = 0; s_bumpvb_capacity = 0; s_b_active = false; s_b_pipeline = false; s_frame_open = false;
 	}
 }
 
@@ -481,6 +499,11 @@ namespace RenderD3D11
 		s_hwnd = (HWND)p_hwnd;
 	}
 
+	void SetClearColour(float f_r, float f_g, float f_b)
+	{
+		s_clear_r = f_r; s_clear_g = f_g; s_clear_b = f_b;
+	}
+
 	void* GetTexture(const void* p_key)
 	{
 		std::unordered_map<const void*, ID3D11ShaderResourceView*>::iterator it = s_tex_cache.find(p_key);
@@ -489,10 +512,28 @@ namespace RenderD3D11
 
 	void* CreateTexture(const void* p_key, int i_width, int i_height, const unsigned int* pu4_bgra)
 	{
-		if (!s_pd3dDevice || i_width < 1 || i_height < 1) return 0;
+		if (!s_pd3dDevice || i_width < 1 || i_height < 1) { s_tex_cache[p_key] = 0; return 0; }
 		ID3D11ShaderResourceView* p_srv = CreateSRVFromBGRA(i_width, i_height, pu4_bgra);
+		if (!p_srv)
+		{
+			char sz[160];
+			wsprintfA(sz, "TRESPASS_D3D11: CreateTexture FAILED %dx%d\n", i_width, i_height);
+			Log(sz);
+			FILE* f = fopen("d3d11_texfail.txt", "a");	// dims of the offending texture, for diagnosis
+			if (f) { fprintf(f, "CreateTexture FAILED %dx%d key=%p\n", i_width, i_height, p_key); fclose(f); }
+		}
 		s_tex_cache[p_key] = p_srv;		// cache even null, so we don't retry a bad texture every frame
 		return (void*)p_srv;
+	}
+
+	bool bTextureKnown(const void* p_key)
+	{
+		return s_tex_cache.find(p_key) != s_tex_cache.end();
+	}
+
+	void MarkTextureFailed(const void* p_key)
+	{
+		s_tex_cache[p_key] = 0;
 	}
 
 	bool bHiResEnabled()
@@ -536,6 +577,16 @@ namespace RenderD3D11
 		return (void*)p_srv;
 	}
 
+	void* GetDynamicTexture(const void* p_key)
+	{
+		// Returns the dynamic SRV only if it was already uploaded THIS frame (so the caller can
+		// skip re-decoding a terrain page shared by several polygons); null otherwise.
+		std::unordered_map<const void*, SDynTex>::iterator it = s_dyn_cache.find(p_key);
+		if (it != s_dyn_cache.end() && it->second.u_frame == s_frame_no && it->second.pSRV)
+			return (void*)it->second.pSRV;
+		return 0;
+	}
+
 	void* UpdateDynamicTexture(const void* p_key, int i_width, int i_height, const unsigned int* pu4_bgra)
 	{
 		if (!s_pd3dDevice || i_width < 1 || i_height < 1) return 0;
@@ -558,6 +609,14 @@ namespace RenderD3D11
 			if (FAILED(s_pd3dDevice->CreateShaderResourceView(dt.pTex, 0, &dt.pSRV))) { dt.pTex->Release(); dt.pTex = 0; return 0; }
 			dt.i_w = i_width; dt.i_h = i_height;
 		}
+
+		// Upload this dynamic texture at most once per frame - terrain calls this per polygon,
+		// so a page shared by many polys was being re-decoded + re-uploaded many times a frame.
+		if (dt.u_frame == s_frame_no && dt.pSRV)
+			return (void*)dt.pSRV;
+		dt.u_frame = s_frame_no;
+
+		s_stat_dyn_bytes += (unsigned int)i_width * (unsigned int)i_height * 4u;
 
 		// Upload this frame's pixels (row by row - the map pitch may exceed width*4).
 		D3D11_MAPPED_SUBRESOURCE ms;
@@ -583,43 +642,55 @@ namespace RenderD3D11
 		    !s_pDSV || !s_pDepthState)
 			return false;
 
-		s_verts.clear();
-		s_batches.clear();
-		s_bump_verts.clear();
-		s_bump_batches.clear();
-
-		s_pd3dContext->OMSetRenderTargets(1, &s_pBackBufferRTV, s_pDSV);
-		s_pd3dContext->OMSetDepthStencilState(s_pDepthState, 0);
-
-		const float af_blend[4] = { 0, 0, 0, 0 };
-		s_pd3dContext->OMSetBlendState(s_pBlend, af_blend, 0xFFFFFFFF);
-
-		float f_scale = (float)s_u_width / (float)i_width;
-		float f_sh    = (float)s_u_height / (float)i_height;
-		if (f_sh < f_scale) f_scale = f_sh;
-
-		D3D11_VIEWPORT vp;
-		vp.Width  = i_width * f_scale; vp.Height = i_height * f_scale;
-		vp.TopLeftX = (s_u_width - vp.Width) * 0.5f; vp.TopLeftY = (s_u_height - vp.Height) * 0.5f;
-		vp.MinDepth = 0.0f; vp.MaxDepth = 1.0f;
-		s_pd3dContext->RSSetViewports(1, &vp);
-		s_pd3dContext->RSSetState(s_pRaster);
-
-		const float af_clear[4] = { 0.10f, 0.35f, 0.45f, 1.0f };
-		s_pd3dContext->ClearRenderTargetView(s_pBackBufferRTV, af_clear);
-		// Depth cleared to 0 (far); closer fragments have larger rhw and win via GEQUAL.
-		s_pd3dContext->ClearDepthStencilView(s_pDSV, D3D11_CLEAR_DEPTH, 0.0f, 0);
-
-		D3D11_MAPPED_SUBRESOURCE ms;
-		if (SUCCEEDED(s_pd3dContext->Map(s_pCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms)))
+		// The engine calls DrawPolygons (hence bBeginFrame) more than once per frame - a main
+		// scene pass and one or more extra passes (e.g. terrain).  Clear + set up state ONCE per
+		// frame and accumulate every pass's polygons; the actual draw + swap-chain Present then
+		// happens once, at CRasterWin::Flip (the true frame boundary).  Clearing/presenting per
+		// pass meant the last (possibly tiny) pass wiped the scene -> the "white-out".
+		if (!s_frame_open)
 		{
-			static int s_i_bumpdebug = -1;
-			if (s_i_bumpdebug < 0)
-				s_i_bumpdebug = GetEnvironmentVariableA("TRESPASS_BUMPDEBUG", 0, 0) > 0 ? 1 : 0;
-			float* pf = (float*)ms.pData;
-			pf[0] = 2.0f / (float)i_width; pf[1] = 2.0f / (float)i_height;
-			pf[2] = (float)s_i_bumpdebug; pf[3] = 0.0f;
-			s_pd3dContext->Unmap(s_pCB, 0);
+			s_verts.clear();
+			s_batches.clear();
+			s_bump_verts.clear();
+			s_bump_batches.clear();
+			s_stat_dyn_bytes = 0;
+			++s_frame_no;
+
+			s_pd3dContext->OMSetRenderTargets(1, &s_pBackBufferRTV, s_pDSV);
+			s_pd3dContext->OMSetDepthStencilState(s_pDepthState, 0);
+
+			const float af_blend[4] = { 0, 0, 0, 0 };
+			s_pd3dContext->OMSetBlendState(s_pBlend, af_blend, 0xFFFFFFFF);
+
+			float f_scale = (float)s_u_width / (float)i_width;
+			float f_sh    = (float)s_u_height / (float)i_height;
+			if (f_sh < f_scale) f_scale = f_sh;
+
+			D3D11_VIEWPORT vp;
+			vp.Width  = i_width * f_scale; vp.Height = i_height * f_scale;
+			vp.TopLeftX = (s_u_width - vp.Width) * 0.5f; vp.TopLeftY = (s_u_height - vp.Height) * 0.5f;
+			vp.MinDepth = 0.0f; vp.MaxDepth = 1.0f;
+			s_pd3dContext->RSSetViewports(1, &vp);
+			s_pd3dContext->RSSetState(s_pRaster);
+
+			const float af_clear[4] = { s_clear_r, s_clear_g, s_clear_b, 1.0f };
+			s_pd3dContext->ClearRenderTargetView(s_pBackBufferRTV, af_clear);
+			// Depth cleared to 0 (far); closer fragments have larger rhw and win via GEQUAL.
+			s_pd3dContext->ClearDepthStencilView(s_pDSV, D3D11_CLEAR_DEPTH, 0.0f, 0);
+
+			D3D11_MAPPED_SUBRESOURCE ms;
+			if (SUCCEEDED(s_pd3dContext->Map(s_pCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms)))
+			{
+				static int s_i_bumpdebug = -1;
+				if (s_i_bumpdebug < 0)
+					s_i_bumpdebug = GetEnvironmentVariableA("TRESPASS_BUMPDEBUG", 0, 0) > 0 ? 1 : 0;
+				float* pf = (float*)ms.pData;
+				pf[0] = 2.0f / (float)i_width; pf[1] = 2.0f / (float)i_height;
+				pf[2] = (float)s_i_bumpdebug; pf[3] = 0.0f;
+				s_pd3dContext->Unmap(s_pCB, 0);
+			}
+
+			s_frame_open = true;
 		}
 		return true;
 	}
@@ -680,6 +751,10 @@ namespace RenderD3D11
 	void Present()
 	{
 		if (!bActive() || !s_pSwapChain) return;
+		// Called once per frame at CRasterWin::Flip.  If no frame was opened (no main-screen
+		// pass this frame, e.g. a menu-only frame drawn by the old GDI path), don't present -
+		// leave the last frame on screen rather than showing an uncleared/garbage backbuffer.
+		if (!s_frame_open) return;
 
 		if (!s_verts.empty() && bEnsureVB((UINT)s_verts.size()))
 		{
@@ -737,7 +812,38 @@ namespace RenderD3D11
 			}
 		}
 
-		s_pSwapChain->Present(0, 0);
+		HRESULT hr_present = s_pSwapChain->Present(0, 0);
+		s_frame_open = false;			// frame consumed; next bBeginFrame starts a fresh one
+
+		// ---- Diagnostic: peak vertex/upload counts + device-removed state -------------------
+		if ((unsigned int)s_verts.size()      > s_stat_max_verts)     s_stat_max_verts     = (unsigned int)s_verts.size();
+		if ((unsigned int)s_bump_verts.size() > s_stat_max_bumpverts) s_stat_max_bumpverts = (unsigned int)s_bump_verts.size();
+		if (s_stat_dyn_bytes > s_stat_max_dyn_bytes) s_stat_max_dyn_bytes = s_stat_dyn_bytes;
+		if (s_stat_dev_removed == 0)
+		{
+			HRESULT hr_rem = s_pd3dDevice->GetDeviceRemovedReason();
+			if (FAILED(hr_present)) s_stat_dev_removed = (long)hr_present;
+			else if (hr_rem != S_OK) s_stat_dev_removed = (long)hr_rem;
+		}
+		static int s_i_stats = -1;
+		if (s_i_stats < 0)
+			s_i_stats = GetEnvironmentVariableA("TRESPASS_RENDERSTATS", 0, 0) > 0 ? 1 : 0;
+		if (s_i_stats && ++s_stat_frames >= 30)
+		{
+			s_stat_frames = 0;
+			FILE* f = fopen("d3d11_stats.txt", "w");
+			if (f)
+			{
+				fprintf(f, "cur_verts=%u peak_verts=%u  cur_bumpverts=%u peak_bumpverts=%u\n",
+				        (unsigned int)s_verts.size(), s_stat_max_verts,
+				        (unsigned int)s_bump_verts.size(), s_stat_max_bumpverts);
+				fprintf(f, "cur_batches=%u bump_batches=%u  dyn_bytes=%u peak_dyn_bytes=%u\n",
+				        (unsigned int)s_batches.size(), (unsigned int)s_bump_batches.size(),
+				        s_stat_dyn_bytes, s_stat_max_dyn_bytes);
+				fprintf(f, "vb_fail=%d  device_removed_reason=0x%08lX\n", s_stat_vb_fail, s_stat_dev_removed);
+				fclose(f);
+			}
+		}
 	}
 
 	void Shutdown() { Shutdown_Internal(); }
