@@ -71,6 +71,7 @@
 #include "Lib/Sys/debugConsole.hpp"
 #include "Lib/Sys/W95/Render.hpp"
 #include "Lib/Sys/RegInit.hpp"
+#include "Lib/Sys/reg.h"
 #include "Lib/W95/Direct3D.hpp"
 #include "Lib/Std/PrivSelf.hpp"
 #include "Lib/Renderer/ScreenRenderAuxD3D.hpp"
@@ -1325,7 +1326,22 @@ rptr<CRaster> prasReadBMP(const char* str_bitmap_name, bool b_vid)
 		DirectDraw::err = pddsPrimary->GetSurfaceDesc(&sd);
 		u4DDSFlagsFront = sd.ddsCaps.dwCaps;
 		fAspectRatio = (float)sd.dwWidth / sd.dwHeight / fMONITOR_ASPECT ;
-		
+
+		//
+		// Correct the pixel-aspect for modern LCDs (INI key "Square Pixels", default on).
+		//
+		// The formula above divides the primary-surface dimensions by the assumed 4:3
+		// monitor aspect. That was valid in 1998 when exclusive fullscreen set a real 4:3
+		// video mode as the primary surface. OpenTrespasser forces windowed cooperative
+		// mode (forceWindowMode), so pddsPrimary is now the desktop (typically 16:9), and
+		// this formula yields a bogus non-square pixel aspect (~1.333) that corrupts the
+		// camera's projection aspect and stretches the world (worst when pitching up/down).
+		// On any modern LCD the pixels are square, so the correct pixel aspect is 1.0.
+		// Set "Square Pixels=0" in tpass.ini to restore the legacy CRT behaviour.
+		//
+		if (GetRegValue(REG_KEY_SQUARE_PIXELS, 1) != 0)
+			fAspectRatio = 1.0f;
+
 		eClearMethod  = ecmTEST;
 		i4ClearTiming = 0;
 		bLocked       = 0;

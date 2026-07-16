@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive, 1997.
+ * Copyright ï¿½ DreamWorks Interactive, 1997.
  *
  * Implementation of RegInit.hpp.
  *
@@ -97,6 +97,7 @@
 #define REG_KEY_DSOUND_IGNORE       "DSoundIgnore"
 #define REG_KEY_DDRAW_CERT_IGNORE   "DDrawCertIgnore"
 #define REG_KEY_DDRAW_HARD_IGNORE   "DDrawHardIgnore"
+#define REG_KEY_SQUARE_PIXELS       "Square Pixels"
 #define REG_KEY_VIEWPORT_X          "XView"
 #define REG_KEY_VIEWPORT_Y          "YView"
 
