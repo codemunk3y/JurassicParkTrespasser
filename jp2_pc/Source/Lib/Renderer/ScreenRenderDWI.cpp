@@ -627,7 +627,14 @@ public:
 									{
 										CBumpAnglePair bang(pu2_row[x]);
 										if (bang.u1GetColour() == 0)
-											pu4_dst[x] = 0;			// transparent bump texel
+											// Colour index 0 means "no per-texel colour": a pure-bump
+											// surface (e.g. crates) whose colour is the material's flat
+											// representative colour, lit by the bump relief.  Zeroing it
+											// unconditionally made whole pure-bump objects vanish (the
+											// bump shader clips alpha 0).  Only a genuinely colour-keyed
+											// surface treats index 0 as a transparent hole.
+											pu4_dst[x] = b_transp ? 0
+											           : (((uint32)ptex->d3dpixColour & 0x00FFFFFF) | 0xFF000000u);
 										else
 											pu4_dst[x] = (pras->pxf.clrFromPixel(bang).u4Value & 0x00FFFFFF) | 0xFF000000u;
 
