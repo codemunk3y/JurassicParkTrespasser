@@ -169,6 +169,15 @@ namespace RenderD3D11
 
 	//******************************************************************************************
 	//
+	// True between bBeginFrame and Present, i.e. a 3D frame's polygons have been accumulated
+	// and are waiting to be presented.  False on a UI-only frame (e.g. the paused in-game
+	// menu, drawn into the software raster), which lets CRasterWin::Flip fall back to the GDI
+	// present so that 2D content is actually shown in D3D11 mode.
+	//
+	bool bFrameOpen();
+
+	//******************************************************************************************
+	//
 	// Present the back buffer to the window (DXGI Present).
 	//
 	void Present();

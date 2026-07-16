@@ -748,6 +748,11 @@ namespace RenderD3D11
 		}
 	}
 
+	bool bFrameOpen()
+	{
+		return s_frame_open;
+	}
+
 	void Present()
 	{
 		if (!bActive() || !s_pSwapChain) return;

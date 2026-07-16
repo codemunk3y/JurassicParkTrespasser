@@ -1492,7 +1492,13 @@ rptr<CRaster> prasReadBMP(const char* str_bitmap_name, bool b_vid)
 		// CScreenRenderDWI::DrawPolygons).  Skip the software GDI present so the two don't
 		// fight over the window.  bActive() is only true once the device actually created,
 		// so a D3D11 init failure falls back to the software present below.
-		if (RenderD3D11::bActive())
+		//
+		// ...but only for real 3D frames.  UI-only frames (the paused in-game menu, loading
+		// screens, etc.) are drawn into the software raster by CUIWnd and never open a D3D11
+		// frame, so bFrameOpen() is false: fall through to the GDI present below so that 2D
+		// content is actually visible in D3D11 mode (otherwise the menu is invisible and the
+		// game looks hung).
+		if (RenderD3D11::bActive() && RenderD3D11::bFrameOpen())
 		{
 			// Flip is the real once-per-frame boundary: draw everything the DrawPolygons passes
 			// accumulated this frame and present it through the DXGI swap chain (a single clear +
