@@ -56,6 +56,7 @@
 #include "PipeLineHeap.hpp"
 #include "DepthSort.hpp"
 #include "RenderCache.hpp"
+#include "Lib/View/RenderD3D11.hpp"
 #include "Primitives/FastBump.hpp"
 #include "Lib/Sys/Profile.hpp"
 #include "Lib/Math/FastTrig.hpp"
@@ -86,17 +87,19 @@
 
 //
 // RENDER CACHE DISABLE (env TRESPASS_NOCACHE): the render cache pre-renders distant/complex
-// objects to 2D billboard cards for speed (a 1998 optimisation).  Those billboards have a
-// surround that the D3D11 path doesn't key transparent (blue "blobs" around objects), and
-// direct rendering is higher fidelity on modern hardware.  When set, skip caching so every
-// object renders directly.  Default off (caching on, original behaviour).
+// objects to 2D billboard cards for speed (a 1998 optimisation).  Those billboards are flagged
+// bPrerasterized, which the D3D11 mirror (ScreenRenderDWI::DrawPolygons) skips - so cached
+// objects (e.g. crates) simply VANISH under D3D11 - and their surround isn't keyed transparent
+// (blue "blobs").  Direct rendering is higher fidelity and cheap on modern hardware, so the
+// cache is auto-disabled whenever the D3D11 backend is enabled; TRESPASS_NOCACHE forces it off
+// for the software path too.  Default (software, no env): caching on, original behaviour.
 //
 static bool bRenderCacheDisabled()
 {
 	static int s_i_nocache = -1;
 	if (s_i_nocache < 0)
 		s_i_nocache = GetEnvironmentVariableA("TRESPASS_NOCACHE", 0, 0) > 0 ? 1 : 0;
-	return s_i_nocache != 0;
+	return s_i_nocache != 0 || RenderD3D11::bEnabled();
 }
 
 #define bINIDIVIDUAL_POLY_STATS (0)
