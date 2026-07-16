@@ -374,6 +374,32 @@ public:
 				if ((gpskyRender!=NULL) && (pSettings->bDrawSky) && (prasScreen->iPixelBits == 16))
 				{
 					gpskyRender->DrawSkyToHorizon();
+
+					// EXPERIMENTAL D3D11: the software renderer has just drawn the full sky (clouds
+					// + horizon fog) into the main raster, before any geometry.  Capture that image
+					// and hand it to the GPU to blit as the sky background - it is pixel-correct and
+					// cannot streak, unlike GPU cloud-plane reprojection.  Runs once per frame.
+					if (RenderD3D11::bEnabled() && bTargetMainScreen())
+					{
+						int i_w = prasScreen->iWidth, i_h = prasScreen->iHeight;
+						static std::vector<uint32> s_skyimg;
+						s_skyimg.resize((size_t)i_w * i_h);
+						prasScreen->Lock();
+						const uint16* p_src = (const uint16*)prasScreen->pSurface;
+						if (p_src)
+						{
+							int i_lp = prasScreen->iLinePixels;
+							for (int y = 0; y < i_h; ++y)
+							{
+								const uint16* row = p_src + (size_t)y * i_lp;
+								uint32*       dst = &s_skyimg[(size_t)y * i_w];
+								for (int x = 0; x < i_w; ++x)
+									dst[x] = (prasScreen->clrFromPixel(row[x]).u4Value & 0x00FFFFFF) | 0xFF000000u;
+							}
+						}
+						prasScreen->Unlock();
+						RenderD3D11::SetSkyImage(i_w, i_h, &s_skyimg[0]);
+					}
 				}
 				else
 				{

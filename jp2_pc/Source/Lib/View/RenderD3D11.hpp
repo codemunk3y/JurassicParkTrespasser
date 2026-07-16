@@ -84,6 +84,17 @@ namespace RenderD3D11
 
 	//******************************************************************************************
 	//
+	// Supply this frame's sky as a finished screen-space image (BGRA, one 0xAARRGGBB texel per
+	// pixel, top-down, i_w x i_h).  The engine's software renderer already draws a correct cloud
+	// sky into the main raster each frame before any geometry; the caller captures that and hands
+	// it here, and the backend blits it full-screen behind the geometry (a 1:1 copy - no
+	// reprojection, so no streaking).  Call each frame before Present; a frame that omits it
+	// draws no sky (the clear colour shows).
+	//
+	void SetSkyImage(int i_width, int i_height, const unsigned int* pu4_bgra);
+
+	//******************************************************************************************
+	//
 	// Texture cache.  Kept engine-agnostic: the caller converts the engine texture to a plain
 	// BGRA image (one 0xAARRGGBB texel each) and supplies a stable key pointer (the CTexture
 	// address).  GetTexture returns the cached opaque handle for p_key, or null if not created

@@ -63,6 +63,20 @@ namespace
 	UINT                     s_bumpvb_capacity = 0;
 	ID3D11ShaderResourceView* s_pFlatNormSRV  = 0;	// 1x1 (0,0,1) fallback normal
 
+	// ---- GPU sky (software sky image blitted behind the geometry) -------------------------
+	// The software renderer already draws a correct cloud sky into the 16-bit main raster each
+	// frame (ClearMemSurfaces -> DrawSkyToHorizon) before any geometry.  Rather than re-project
+	// clouds on the GPU (which streaks at grazing angles), we upload that finished screen-space
+	// image and blit it full-screen behind the geometry: pixel-exact, and it cannot streak.
+	ID3D11VertexShader*      s_pSkyVS         = 0;
+	ID3D11PixelShader*       s_pSkyPS         = 0;
+	ID3D11DepthStencilState* s_pSkyDepthState = 0;	// no depth test/write for the sky
+	ID3D11Texture2D*         s_pSkyImgTex     = 0;	// dynamic, screen-sized sky image
+	ID3D11ShaderResourceView* s_pSkyImgSRV    = 0;
+	int                      s_sky_img_w      = 0;
+	int                      s_sky_img_h      = 0;
+	bool                     s_sky_valid      = false;	// SetSkyImage called this frame
+
 	int   s_i_enabled    = -1;
 	bool  s_b_init_tried = false;
 	bool  s_b_active     = false;
@@ -180,6 +194,27 @@ namespace
 		"    return float4(saturate(i.light2.y * 4.0), ndl, 0.0, 1.0);\n"
 		"  }\n"
 		"  return float4(saturate(base.rgb * lit + spec), base.a);\n"
+		"}\n";
+
+	// Sky VS: a full-screen triangle generated from the vertex id (no vertex buffer), passing a
+	// 0..1 screen UV (top-left = (0,0), bottom-right = (1,1)) to sample the sky image top-down.
+	const char* k_psz_sky_vs =
+		"struct VSOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; };\n"
+		"VSOut main(uint id : SV_VertexID) {\n"
+		"  VSOut o;\n"
+		"  o.uv  = float2((id << 1) & 2, id & 2);\n"
+		"  o.pos = float4(o.uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);\n"
+		"  return o;\n"
+		"}\n";
+
+	// Sky PS: straight blit of the software-rendered sky image (which already has clouds + fog
+	// baked in).  A 1:1 screen-space copy, so there is nothing to alias or streak.
+	const char* k_psz_sky_ps =
+		"Texture2D    gSkyTex : register(t0);\n"
+		"SamplerState gSmp    : register(s0);\n"
+		"struct VSOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; };\n"
+		"float4 main(VSOut i) : SV_Target {\n"
+		"  return float4(gSkyTex.Sample(gSmp, i.uv).rgb, 1.0);\n"
 		"}\n";
 
 	inline void Log(const char* psz) { OutputDebugStringA(psz); }
@@ -410,6 +445,34 @@ namespace
 				Log("TRESPASS_D3D11: bump pipeline unavailable (falling back to flat bump colour)\n");
 		}
 
+		// ---- Sky pipeline (full-screen blit of the software sky image) ----------------------
+		{
+			ID3DBlob* p_svs = 0; ID3DBlob* p_sps = 0; ID3DBlob* p_serr = 0;
+			if (SUCCEEDED(D3DCompile(k_psz_sky_vs, strlen(k_psz_sky_vs), "svs", 0, 0, "main", "vs_4_0", 0, 0, &p_svs, &p_serr)))
+			{
+				if (p_serr) { p_serr->Release(); p_serr = 0; }
+				if (SUCCEEDED(D3DCompile(k_psz_sky_ps, strlen(k_psz_sky_ps), "sps", 0, 0, "main", "ps_4_0", 0, 0, &p_sps, &p_serr)))
+				{
+					if (p_serr) { p_serr->Release(); p_serr = 0; }
+					s_pd3dDevice->CreateVertexShader(p_svs->GetBufferPointer(), p_svs->GetBufferSize(), 0, &s_pSkyVS);
+					s_pd3dDevice->CreatePixelShader (p_sps->GetBufferPointer(), p_sps->GetBufferSize(), 0, &s_pSkyPS);
+					p_sps->Release();
+				}
+				else if (p_serr) { Log("TRESPASS_D3D11: sky PS compile FAILED\n"); Log((const char*)p_serr->GetBufferPointer()); p_serr->Release(); }
+				p_svs->Release();
+			}
+			else if (p_serr) { Log("TRESPASS_D3D11: sky VS compile FAILED\n"); Log((const char*)p_serr->GetBufferPointer()); p_serr->Release(); }
+
+			D3D11_DEPTH_STENCIL_DESC sdsd; ZeroMemory(&sdsd, sizeof(sdsd));
+			sdsd.DepthEnable = FALSE; sdsd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+			s_pd3dDevice->CreateDepthStencilState(&sdsd, &s_pSkyDepthState);
+
+			if (s_pSkyVS && s_pSkyPS && s_pSkyDepthState)
+				Log("TRESPASS_D3D11: sky pipeline built\n");
+			else
+				Log("TRESPASS_D3D11: sky pipeline unavailable\n");
+		}
+
 		Log("TRESPASS_D3D11: pipeline built (slice 2b: textured)\n");
 	}
 
@@ -456,6 +519,11 @@ namespace
 			if (it->second.pTex) it->second.pTex->Release();
 		}
 		s_dyn_cache.clear();
+		if (s_pSkyImgSRV)     { s_pSkyImgSRV->Release();     s_pSkyImgSRV     = 0; }
+		if (s_pSkyImgTex)     { s_pSkyImgTex->Release();     s_pSkyImgTex     = 0; s_sky_img_w = s_sky_img_h = 0; }
+		if (s_pSkyDepthState) { s_pSkyDepthState->Release(); s_pSkyDepthState = 0; }
+		if (s_pSkyPS)         { s_pSkyPS->Release();         s_pSkyPS         = 0; }
+		if (s_pSkyVS)         { s_pSkyVS->Release();         s_pSkyVS         = 0; }
 		if (s_pFlatNormSRV)   { s_pFlatNormSRV->Release();   s_pFlatNormSRV   = 0; }
 		if (s_pBumpVB)        { s_pBumpVB->Release();        s_pBumpVB        = 0; }
 		if (s_pBumpLayout)    { s_pBumpLayout->Release();    s_pBumpLayout    = 0; }
@@ -502,6 +570,38 @@ namespace RenderD3D11
 	void SetClearColour(float f_r, float f_g, float f_b)
 	{
 		s_clear_r = f_r; s_clear_g = f_g; s_clear_b = f_b;
+	}
+
+	void SetSkyImage(int i_w, int i_h, const unsigned int* pu4_bgra)
+	{
+		if (!s_pd3dDevice || i_w < 1 || i_h < 1) return;
+
+		// (Re)create the dynamic sky texture on first use or a resolution change.
+		if (!s_pSkyImgTex || s_sky_img_w != i_w || s_sky_img_h != i_h)
+		{
+			if (s_pSkyImgSRV) { s_pSkyImgSRV->Release(); s_pSkyImgSRV = 0; }
+			if (s_pSkyImgTex) { s_pSkyImgTex->Release(); s_pSkyImgTex = 0; }
+			D3D11_TEXTURE2D_DESC td; ZeroMemory(&td, sizeof(td));
+			td.Width = i_w; td.Height = i_h; td.MipLevels = 1; td.ArraySize = 1;
+			td.Format = DXGI_FORMAT_B8G8R8A8_UNORM; td.SampleDesc.Count = 1;
+			td.Usage = D3D11_USAGE_DYNAMIC; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+			td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+			if (FAILED(s_pd3dDevice->CreateTexture2D(&td, 0, &s_pSkyImgTex)) || !s_pSkyImgTex) { s_pSkyImgTex = 0; return; }
+			if (FAILED(s_pd3dDevice->CreateShaderResourceView(s_pSkyImgTex, 0, &s_pSkyImgSRV))) { s_pSkyImgTex->Release(); s_pSkyImgTex = 0; return; }
+			s_sky_img_w = i_w; s_sky_img_h = i_h;
+		}
+
+		// Upload this frame's sky pixels (row by row - the map pitch may exceed width*4).
+		D3D11_MAPPED_SUBRESOURCE ms;
+		if (SUCCEEDED(s_pd3dContext->Map(s_pSkyImgTex, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms)))
+		{
+			const unsigned char* p_src = (const unsigned char*)pu4_bgra;
+			unsigned char*       p_dst = (unsigned char*)ms.pData;
+			for (int y = 0; y < i_h; ++y)
+				memcpy(p_dst + (size_t)y * ms.RowPitch, p_src + (size_t)y * i_w * 4, (size_t)i_w * 4);
+			s_pd3dContext->Unmap(s_pSkyImgTex, 0);
+		}
+		s_sky_valid = true;
 	}
 
 	void* GetTexture(const void* p_key)
@@ -761,6 +861,23 @@ namespace RenderD3D11
 		// leave the last frame on screen rather than showing an uncleared/garbage backbuffer.
 		if (!s_frame_open) return;
 
+		// Sky pass first, behind everything (no depth test/write): a 1:1 blit of the software
+		// sky image captured this frame.  Geometry draws over it.
+		if (s_sky_valid && s_pSkyVS && s_pSkyPS && s_pSkyDepthState && s_pSkyImgSRV)
+		{
+			s_pd3dContext->OMSetDepthStencilState(s_pSkyDepthState, 0);
+			s_pd3dContext->IASetInputLayout(0);
+			ID3D11Buffer* p_novb = 0; UINT u_z0 = 0, u_z1 = 0;
+			s_pd3dContext->IASetVertexBuffers(0, 1, &p_novb, &u_z0, &u_z1);
+			s_pd3dContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+			s_pd3dContext->VSSetShader(s_pSkyVS, 0, 0);
+			s_pd3dContext->PSSetShader(s_pSkyPS, 0, 0);
+			s_pd3dContext->PSSetSamplers(0, 1, &s_pSampClamp);
+			s_pd3dContext->PSSetShaderResources(0, 1, &s_pSkyImgSRV);
+			s_pd3dContext->Draw(3, 0);
+			s_pd3dContext->OMSetDepthStencilState(s_pDepthState, 0);	// restore for geometry
+		}
+
 		if (!s_verts.empty() && bEnsureVB((UINT)s_verts.size()))
 		{
 			D3D11_MAPPED_SUBRESOURCE ms;
@@ -819,6 +936,7 @@ namespace RenderD3D11
 
 		HRESULT hr_present = s_pSwapChain->Present(0, 0);
 		s_frame_open = false;			// frame consumed; next bBeginFrame starts a fresh one
+		s_sky_valid  = false;			// require SetSkyImage again next frame (else no sky)
 
 		// ---- Diagnostic: peak vertex/upload counts + device-removed state -------------------
 		if ((unsigned int)s_verts.size()      > s_stat_max_verts)     s_stat_max_verts     = (unsigned int)s_verts.size();
