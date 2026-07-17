@@ -141,6 +141,23 @@ namespace RenderD3D11
 	// GPU texture (created/resized as needed) and returns its handle.  Call every frame.
 	void* UpdateDynamicTexture(const void* p_key, int i_width, int i_height, const unsigned int* pu4_bgra);
 
+	//******************************************************************************************
+	//
+	// DIRECT 565 UPLOAD.  The engine's dynamic rasters (terrain pages, water) and its sky image
+	// are 16-bit 565 in memory, which is exactly DXGI_FORMAT_B5G6R5_UNORM - so their rows can be
+	// memcpy'd to the GPU with no conversion at all.  Converting them to BGRA per texel on the
+	// CPU instead was costing ~25 ms/frame (10.4 MB of dynamic upload EVERY frame, measured with
+	// TRESPASS_RENDERSTATS), and doubled the bytes moved for nothing.  i_src_pitch is the source
+	// row stride in BYTES (a raster's row may be padded - use CRaster::iLineBytes()).
+	//
+	// Only call these when b565DirectSupported() AND the source really is 565: the caller must
+	// check the raster's pixel format, not assume it.
+	//
+	bool  b565DirectSupported();
+	void* UpdateDynamicTexture565(const void* p_key, int i_width, int i_height,
+	                              const void* pv_565, int i_src_pitch);
+	void  SetSkyImage565(int i_w, int i_h, const void* pv_565, int i_src_pitch);
+
 	// Returns a dynamic texture's handle only if it was already uploaded this frame, else null.
 	// Lets the caller skip re-decoding a terrain page that several polygons share.
 	void* GetDynamicTexture(const void* p_key);

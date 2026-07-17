@@ -75,6 +75,7 @@ namespace
 	ID3D11ShaderResourceView* s_pSkyImgSRV    = 0;
 	int                      s_sky_img_w      = 0;
 	int                      s_sky_img_h      = 0;
+	bool                     s_b_sky_565      = false;	// sky texture is B5G6R5, not BGRA
 	bool                     s_sky_valid      = false;	// SetSkyImage called this frame
 
 	int   s_i_enabled    = -1;
@@ -120,7 +121,7 @@ namespace
 
 	// Dynamic (terrain) textures: contents change per frame and CTexture objects recycle,
 	// so keep a persistent DYNAMIC gpu texture per key and re-upload its pixels each frame.
-	struct SDynTex { ID3D11Texture2D* pTex; ID3D11ShaderResourceView* pSRV; int i_w; int i_h; unsigned u_frame; };
+	struct SDynTex { ID3D11Texture2D* pTex; ID3D11ShaderResourceView* pSRV; int i_w; int i_h; unsigned u_frame; bool b_565; };
 	std::unordered_map<const void*, SDynTex> s_dyn_cache;
 	unsigned s_frame_no = 0;	// bumped each bBeginFrame; used to upload each dyn texture once/frame
 
@@ -612,36 +613,54 @@ namespace RenderD3D11
 		s_clear_r = f_r; s_clear_g = f_g; s_clear_b = f_b;
 	}
 
-	void SetSkyImage(int i_w, int i_h, const unsigned int* pu4_bgra)
+	//
+	// b_565: the source is the engine's own 16-bit 565 raster, uploaded verbatim (see
+	// UpdateDynamicTexture_).  The sky image is screen-sized, so converting it to BGRA on the
+	// CPU cost ~10 ms/frame on its own - a per-pixel price for a blit the GPU can do from 565.
+	// i_src_pitch is the source row stride in BYTES.
+	//
+	void SetSkyImage_(int i_w, int i_h, const void* pv_src, int i_src_pitch, bool b_565)
 	{
 		if (!s_pd3dDevice || i_w < 1 || i_h < 1) return;
 
-		// (Re)create the dynamic sky texture on first use or a resolution change.
-		if (!s_pSkyImgTex || s_sky_img_w != i_w || s_sky_img_h != i_h)
+		// (Re)create the dynamic sky texture on first use, or a resolution/format change.
+		if (!s_pSkyImgTex || s_sky_img_w != i_w || s_sky_img_h != i_h || s_b_sky_565 != b_565)
 		{
 			if (s_pSkyImgSRV) { s_pSkyImgSRV->Release(); s_pSkyImgSRV = 0; }
 			if (s_pSkyImgTex) { s_pSkyImgTex->Release(); s_pSkyImgTex = 0; }
 			D3D11_TEXTURE2D_DESC td; ZeroMemory(&td, sizeof(td));
 			td.Width = i_w; td.Height = i_h; td.MipLevels = 1; td.ArraySize = 1;
-			td.Format = DXGI_FORMAT_B8G8R8A8_UNORM; td.SampleDesc.Count = 1;
+			td.Format = b_565 ? DXGI_FORMAT_B5G6R5_UNORM : DXGI_FORMAT_B8G8R8A8_UNORM;
+			td.SampleDesc.Count = 1;
 			td.Usage = D3D11_USAGE_DYNAMIC; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 			td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 			if (FAILED(s_pd3dDevice->CreateTexture2D(&td, 0, &s_pSkyImgTex)) || !s_pSkyImgTex) { s_pSkyImgTex = 0; return; }
 			if (FAILED(s_pd3dDevice->CreateShaderResourceView(s_pSkyImgTex, 0, &s_pSkyImgSRV))) { s_pSkyImgTex->Release(); s_pSkyImgTex = 0; return; }
-			s_sky_img_w = i_w; s_sky_img_h = i_h;
+			s_sky_img_w = i_w; s_sky_img_h = i_h; s_b_sky_565 = b_565;
 		}
 
-		// Upload this frame's sky pixels (row by row - the map pitch may exceed width*4).
+		// Upload this frame's sky pixels (row by row - the map pitch may exceed the row).
 		D3D11_MAPPED_SUBRESOURCE ms;
 		if (SUCCEEDED(s_pd3dContext->Map(s_pSkyImgTex, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms)))
 		{
-			const unsigned char* p_src = (const unsigned char*)pu4_bgra;
+			const unsigned char* p_src = (const unsigned char*)pv_src;
 			unsigned char*       p_dst = (unsigned char*)ms.pData;
+			size_t               u_row = (size_t)i_w * (b_565 ? 2 : 4);
 			for (int y = 0; y < i_h; ++y)
-				memcpy(p_dst + (size_t)y * ms.RowPitch, p_src + (size_t)y * i_w * 4, (size_t)i_w * 4);
+				memcpy(p_dst + (size_t)y * ms.RowPitch, p_src + (size_t)y * i_src_pitch, u_row);
 			s_pd3dContext->Unmap(s_pSkyImgTex, 0);
 		}
 		s_sky_valid = true;
+	}
+
+	void SetSkyImage(int i_w, int i_h, const unsigned int* pu4_bgra)
+	{
+		SetSkyImage_(i_w, i_h, pu4_bgra, i_w * 4, false);
+	}
+
+	void SetSkyImage565(int i_w, int i_h, const void* pv_565, int i_src_pitch)
+	{
+		SetSkyImage_(i_w, i_h, pv_565, i_src_pitch, true);
 	}
 
 	void* GetTexture(const void* p_key)
@@ -762,27 +781,34 @@ namespace RenderD3D11
 		return 0;
 	}
 
-	void* UpdateDynamicTexture(const void* p_key, int i_width, int i_height, const unsigned int* pu4_bgra)
+	//
+	// Shared body for the dynamic-texture upload.  b_565 selects DXGI_FORMAT_B5G6R5_UNORM and
+	// a 2-byte texel (the engine's own 16-bit 565 raster, copied verbatim); otherwise BGRA and
+	// 4 bytes.  i_src_pitch is the source row stride in BYTES.
+	//
+	void* UpdateDynamicTexture_(const void* p_key, int i_width, int i_height,
+	                            const void* pv_src, int i_src_pitch, bool b_565)
 	{
 		if (!s_pd3dDevice || i_width < 1 || i_height < 1) return 0;
 
 		SDynTex& dt = s_dyn_cache[p_key];		// inserts a zeroed entry on first sight
 
-		// (Re)create the GPU texture if it doesn't exist or the size changed.
-		if (!dt.pTex || dt.i_w != i_width || dt.i_h != i_height)
+		// (Re)create the GPU texture if it doesn't exist, or the size or FORMAT changed.
+		if (!dt.pTex || dt.i_w != i_width || dt.i_h != i_height || dt.b_565 != b_565)
 		{
 			if (dt.pSRV) { dt.pSRV->Release(); dt.pSRV = 0; }
 			if (dt.pTex) { dt.pTex->Release(); dt.pTex = 0; }
 
 			D3D11_TEXTURE2D_DESC td; ZeroMemory(&td, sizeof(td));
 			td.Width = i_width; td.Height = i_height; td.MipLevels = 1; td.ArraySize = 1;
-			td.Format = DXGI_FORMAT_B8G8R8A8_UNORM; td.SampleDesc.Count = 1;
+			td.Format = b_565 ? DXGI_FORMAT_B5G6R5_UNORM : DXGI_FORMAT_B8G8R8A8_UNORM;
+			td.SampleDesc.Count = 1;
 			td.Usage = D3D11_USAGE_DYNAMIC;
 			td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 			td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 			if (FAILED(s_pd3dDevice->CreateTexture2D(&td, 0, &dt.pTex)) || !dt.pTex) { dt.pTex = 0; return 0; }
 			if (FAILED(s_pd3dDevice->CreateShaderResourceView(dt.pTex, 0, &dt.pSRV))) { dt.pTex->Release(); dt.pTex = 0; return 0; }
-			dt.i_w = i_width; dt.i_h = i_height;
+			dt.i_w = i_width; dt.i_h = i_height; dt.b_565 = b_565;
 		}
 
 		// Upload this dynamic texture at most once per frame - terrain calls this per polygon,
@@ -791,19 +817,48 @@ namespace RenderD3D11
 			return (void*)dt.pSRV;
 		dt.u_frame = s_frame_no;
 
-		s_stat_dyn_bytes += (unsigned int)i_width * (unsigned int)i_height * 4u;
+		int i_texel = b_565 ? 2 : 4;
+		s_stat_dyn_bytes += (unsigned int)i_width * (unsigned int)i_height * (unsigned int)i_texel;
 
-		// Upload this frame's pixels (row by row - the map pitch may exceed width*4).
+		// Upload this frame's pixels (row by row - the map pitch may exceed the row's bytes).
 		D3D11_MAPPED_SUBRESOURCE ms;
 		if (SUCCEEDED(s_pd3dContext->Map(dt.pTex, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms)))
 		{
-			const unsigned char* p_src = (const unsigned char*)pu4_bgra;
+			const unsigned char* p_src = (const unsigned char*)pv_src;
 			unsigned char*       p_dst = (unsigned char*)ms.pData;
+			size_t               u_row = (size_t)i_width * i_texel;
 			for (int y = 0; y < i_height; ++y)
-				memcpy(p_dst + (size_t)y * ms.RowPitch, p_src + (size_t)y * i_width * 4, (size_t)i_width * 4);
+				memcpy(p_dst + (size_t)y * ms.RowPitch, p_src + (size_t)y * i_src_pitch, u_row);
 			s_pd3dContext->Unmap(dt.pTex, 0);
 		}
 		return (void*)dt.pSRV;
+	}
+
+	void* UpdateDynamicTexture(const void* p_key, int i_width, int i_height, const unsigned int* pu4_bgra)
+	{
+		return UpdateDynamicTexture_(p_key, i_width, i_height, pu4_bgra, i_width * 4, false);
+	}
+
+	void* UpdateDynamicTexture565(const void* p_key, int i_width, int i_height,
+	                              const void* pv_565, int i_src_pitch)
+	{
+		return UpdateDynamicTexture_(p_key, i_width, i_height, pv_565, i_src_pitch, true);
+	}
+
+	bool b565DirectSupported()
+	{
+		// DXGI_FORMAT_B5G6R5_UNORM is a DXGI 1.2 format - effectively universal on feature
+		// level 11 hardware, but cheap to verify once rather than assume.
+		static int s_i_565 = -1;
+		if (s_i_565 < 0 && s_pd3dDevice)
+		{
+			UINT u_sup = 0;
+			s_i_565 = (SUCCEEDED(s_pd3dDevice->CheckFormatSupport(DXGI_FORMAT_B5G6R5_UNORM, &u_sup)) &&
+			           (u_sup & D3D11_FORMAT_SUPPORT_TEXTURE2D)) ? 1 : 0;
+			Log(s_i_565 ? "TRESPASS_D3D11: B5G6R5 supported - direct 565 upload\n"
+			            : "TRESPASS_D3D11: B5G6R5 unsupported - CPU converts to BGRA\n");
+		}
+		return s_i_565 == 1;
 	}
 
 	bool bBeginFrame(int i_width, int i_height)

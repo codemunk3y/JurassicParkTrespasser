@@ -187,6 +187,25 @@ static int s_i_mip_request_budget = 0;
 
 //******************************************************************************************
 //
+static bool bIsScreen565(const CRaster* pras)
+//
+// True when this raster's texels are plain 16-bit 565 in memory - i.e. bit-identical to
+// DXGI_FORMAT_B5G6R5_UNORM, so its rows can go to the GPU with no conversion.
+//
+// CCompPos stores a component's start bit and (8 - its width), so 565 is R(11,5) G(5,6)
+// B(0,5).  Checked rather than assumed: the engine's 16-bit rasters take their format from
+// prasMainScreen, which is 565 on this path but is not guaranteed to be.
+//
+//**************************************
+{
+	return pras && pras->iPixelBits == 16 &&
+	       pras->pxf.cposR.u1Pos == 11 && pras->pxf.cposR.u1WidthDiff == 3 &&
+	       pras->pxf.cposG.u1Pos ==  5 && pras->pxf.cposG.u1WidthDiff == 2 &&
+	       pras->pxf.cposB.u1Pos ==  0 && pras->pxf.cposB.u1WidthDiff == 3;
+}
+
+//******************************************************************************************
+//
 static int iSharpestMipLevel(const CTexture* ptex)
 //
 // Returns the sharpest mip level that can be drawn without forcing extra paging - the
@@ -461,23 +480,36 @@ public:
 					if (RenderD3D11::bEnabled() && bTargetMainScreen())
 					{
 						int i_w = prasScreen->iWidth, i_h = prasScreen->iHeight;
-						static std::vector<uint32> s_skyimg;
-						s_skyimg.resize((size_t)i_w * i_h);
 						prasScreen->Lock();
 						const uint16* p_src = (const uint16*)prasScreen->pSurface;
 						if (p_src)
 						{
-							int i_lp = prasScreen->iLinePixels;
-							for (int y = 0; y < i_h; ++y)
+							if (RenderD3D11::b565DirectSupported() && bIsScreen565(prasScreen))
 							{
-								const uint16* row = p_src + (size_t)y * i_lp;
-								uint32*       dst = &s_skyimg[(size_t)y * i_w];
-								for (int x = 0; x < i_w; ++x)
-									dst[x] = (prasScreen->clrFromPixel(row[x]).u4Value & 0x00FFFFFF) | 0xFF000000u;
+								// The sky has just been drawn into this 16-bit 565 raster, and
+								// 565 IS the GPU's B5G6R5 - so hand the rows over verbatim.
+								// Converting all ~1.5M screen pixels to BGRA instead - through a
+								// VIRTUAL clrFromPixel call each - cost ~10 ms/frame by itself,
+								// which is most of what ClearScreen was reporting.
+								RenderD3D11::SetSkyImage565(i_w, i_h, p_src, prasScreen->iLineBytes());
+							}
+							else
+							{
+								// Fallback for a non-565 screen: convert per pixel as before.
+								static std::vector<uint32> s_skyimg;
+								s_skyimg.resize((size_t)i_w * i_h);
+								int i_lp = prasScreen->iLinePixels;
+								for (int y = 0; y < i_h; ++y)
+								{
+									const uint16* row = p_src + (size_t)y * i_lp;
+									uint32*       dst = &s_skyimg[(size_t)y * i_w];
+									for (int x = 0; x < i_w; ++x)
+										dst[x] = (prasScreen->clrFromPixel(row[x]).u4Value & 0x00FFFFFF) | 0xFF000000u;
+								}
+								RenderD3D11::SetSkyImage(i_w, i_h, &s_skyimg[0]);
 							}
 						}
 						prasScreen->Unlock();
-						RenderD3D11::SetSkyImage(i_w, i_h, &s_skyimg[0]);
 					}
 				}
 				else
@@ -511,6 +543,10 @@ public:
 		// Set even scanlines only flag.
 		bEvenScanlinesOnly = pSettings->bHalfScanlines;
 
+		// True once this pass's polygons have been handed to the GPU, in which case the
+		// software rasteriser must not draw them as well (see the end of this function).
+		bool b_mirrored = false;
+
 		// EXPERIMENTAL D3D11 PRESENT (env TRESPASS_D3D11): when enabled, mirror the final
 		// screen-space polygon list of the MAIN SCREEN through the modern GPU backend.
 		// This is the same transformed/lit/textured stream the software rasteriser draws;
@@ -531,6 +567,9 @@ public:
 
 			if (RenderD3D11::bBeginFrame(prasScreen->iWidth, prasScreen->iHeight))
 			{
+				// The GPU owns this pass's pixels from here on.
+				b_mirrored = true;
+
 				// Fresh page-in budget for this pass (see iSharpestMipLevel).
 				s_i_mip_request_budget = 4;
 
@@ -666,6 +705,19 @@ public:
 							if (pu1_base && !gtxmTexMan.bIsAvailable(pras->pSurface, pras->iByteSpan()))
 								pu1_base = 0;
 
+							//
+							// FAST PATH for the dynamic surfaces (terrain pages + water), which
+							// are re-uploaded EVERY frame and so dominate the mirror: their
+							// rasters are the engine's 16-bit 565, which is exactly the GPU's
+							// B5G6R5 - so hand the rows over verbatim instead of converting
+							// every texel to BGRA on the CPU.  That conversion was ~10.4 MB of
+							// output per frame (TRESPASS_RENDERSTATS dyn_bytes), and it also
+							// doubled what had to be copied.
+							//
+							bool b_direct565 = b_dynamic && pu1_base &&
+							                   RenderD3D11::b565DirectSupported() &&
+							                   bIsScreen565(pras);
+
 							// Hi-res GPU side-load (env TRESPASS_HIRES): for static, opaque
 							// textures, display an AI-upscaled image in place of the stock
 							// 256-cap texture.  The GPU samples normalised [0,1] UVs, so this
@@ -713,8 +765,10 @@ public:
 									}
 								}
 							}
-							else if (!p_hires && pu1_base && b_rgb16)
+							else if (!b_direct565 && !p_hires && pu1_base && b_rgb16)
 							{
+								// (b_direct565 can only land here - it implies a dynamic
+								// surface, whose raster is always 16-bit.)
 								for (int y = 0; y < i_h; ++y)
 								{
 									const uint16* pu2_row = (const uint16*)pu1_base + (size_t)y * i_lp;
@@ -768,6 +822,13 @@ public:
 									}
 								}
 							}
+							// Direct 565: upload from the raster itself, so it must happen while
+							// the raster is still locked (the other paths upload from s_scratch
+							// after the Unlock).  iLineBytes() because a row may be padded.
+							if (b_direct565)
+								p_texhandle = RenderD3D11::UpdateDynamicTexture565(
+									pv_key, i_w, i_h, pu1_base, pras->iLineBytes());
+
 							pras->Unlock();
 
 							// CreateTextureHiRes already cached the hi-res SRV under the key;
@@ -779,7 +840,7 @@ public:
 							// the polygon draws flat in the material colour until then.
 							if (p_hires)
 								p_texhandle = p_hires;
-							else if (pu1_base)
+							else if (pu1_base && !b_direct565)		// b_direct565 already uploaded
 								p_texhandle = b_dynamic
 								            ? RenderD3D11::UpdateDynamicTexture(pv_key, i_w, i_h, &s_scratch[0])
 								            : RenderD3D11::CreateTexture(pv_key, i_w, i_h, &s_scratch[0]);
@@ -940,6 +1001,27 @@ public:
 				// Present happens at CRasterWin::Flip (the real frame boundary).
 			}
 		}
+
+		//
+		// The GPU has drawn this pass, so rasterising the same polygons in SOFTWARE as well is
+		// pure waste - and it is the bulk of the frame: 7.53 ms of a 8.95 ms render at 1024x768
+		// (84%), measured with TRESPASS_PROFILE.  Nothing downstream reads those pixels while
+		// D3D11 owns the present (CRasterWin::Flip early-returns), so skip the fill entirely.
+		// This is what buys the VR budget: what remains on the CPU is the geometry pass, ~0.9 ms.
+		//
+		// Two things DO still read the software raster, hence the narrow condition:
+		//   - The SKY is drawn into it before any geometry (ClearMemSurfaces ->
+		//     DrawSkyToHorizon) and captured from there for the GPU blit.  Unaffected: this
+		//     skips only the polygon fill.
+		//   - Passes that are NOT the main screen (b_mirrored false) - e.g. render-cache
+		//     targets - are still rasterised normally.
+		//
+		// KNOWN GAP (next slice): the Esc-menu background is BitBlt'd out of the software back
+		// buffer (CTPassGlobals::CaptureBackground), so it now shows only the sky until that
+		// capture is re-homed onto the GPU back buffer.
+		//
+		if (b_mirrored)
+			return;
 
 		CScreenRender::DrawPolygons(paprpoly);
 	}
