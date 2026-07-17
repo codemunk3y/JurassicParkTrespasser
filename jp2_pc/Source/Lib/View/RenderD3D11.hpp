@@ -113,6 +113,14 @@ namespace RenderD3D11
 	bool bTextureKnown(const void* p_key);
 	void MarkTextureFailed(const void* p_key);
 
+	// Release every cached texture and drop all cache entries.  MUST be called when the engine
+	// tears a level down (CWorld::Purge): the caches are keyed by raw CRaster/CTexture
+	// addresses, which the next level can reuse for different textures - stale entries would
+	// then draw the previous level's images - and, being grow-only, would otherwise never
+	// release the old level's GPU memory.  Safe to call when D3D11 is disabled or was never
+	// initialised.  Textures re-upload on first sight afterwards.
+	void PurgeTextures();
+
 	//******************************************************************************************
 	//
 	// HI-RES TEXTURE SIDE-LOAD (env TRESPASS_HIRES).  The GPU samples normalised [0,1] UVs,

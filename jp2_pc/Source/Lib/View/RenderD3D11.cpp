@@ -656,6 +656,41 @@ namespace RenderD3D11
 		return s_tex_cache.find(p_key) != s_tex_cache.end();
 	}
 
+	void PurgeTextures()
+	{
+		// Every cache here is keyed by a raw engine address (a CRaster or CTexture), and an
+		// address only means anything while the object at it is alive.  A level teardown frees
+		// all of them at once and the next level's objects can land on the SAME addresses, so
+		// entries left behind would hand a new texture the OLD level's image.  The caches are
+		// also grow-only, so the old level's GPU memory would never be released either.
+		// Dropping the lot at teardown fixes both; textures simply re-upload on first sight,
+		// exactly as they did when the level was first entered.
+		//
+		// Safe to call at any time, including when D3D11 is disabled or was never initialised
+		// (the caches are then empty).  Releasing an SRV that is still bound to the context is
+		// fine - D3D11 holds its own reference - but the batch lists below hold RAW pointers,
+		// so they must be dropped or Present could draw from freed memory.
+		s_verts.clear();
+		s_batches.clear();
+		s_bump_verts.clear();
+		s_bump_batches.clear();
+
+		for (std::unordered_map<const void*, ID3D11ShaderResourceView*>::iterator it = s_tex_cache.begin(); it != s_tex_cache.end(); ++it)
+			if (it->second) it->second->Release();
+		s_tex_cache.clear();
+
+		for (std::unordered_map<const void*, ID3D11ShaderResourceView*>::iterator it = s_norm_cache.begin(); it != s_norm_cache.end(); ++it)
+			if (it->second) it->second->Release();
+		s_norm_cache.clear();
+
+		for (std::unordered_map<const void*, SDynTex>::iterator it = s_dyn_cache.begin(); it != s_dyn_cache.end(); ++it)
+		{
+			if (it->second.pSRV) it->second.pSRV->Release();
+			if (it->second.pTex) it->second.pTex->Release();
+		}
+		s_dyn_cache.clear();
+	}
+
 	void MarkTextureFailed(const void* p_key)
 	{
 		s_tex_cache[p_key] = 0;

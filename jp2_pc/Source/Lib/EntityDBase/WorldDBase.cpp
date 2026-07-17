@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive. 1996
+ * Copyright ï¿½ DreamWorks Interactive. 1996
  *
  * Implementation of WorldDBase.hpp.
  *
@@ -140,6 +140,7 @@ template<class X> class CMicrosoftsCompilerIsBuggyAndWeHateIt
 #include "Lib\Renderer\Sky.hpp"
 
 #include "Lib/View/Grab.hpp"
+#include "Lib/View/RenderD3D11.hpp"		// PurgeTextures (GPU texture cache is keyed by raster address)
 
 #include "Lib/Sys/FileEx.hpp"
 #include "WorldPriv.hpp"
@@ -2026,6 +2027,10 @@ CRenderDB*  ps_renderDB = 0;
 
 		extern rptr<CMesh>	pmshLightPt;
 		pmshLightPt = rptr0;
+
+		// Release the D3D11 backend's cached GPU textures FIRST: they are keyed by the raster
+		// and texture addresses about to be freed here, which the next level can reuse.
+		RenderD3D11::PurgeTextures();
 
 		// Release texture pointers.
 		EraseTextureMap();
