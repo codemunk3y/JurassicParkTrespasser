@@ -593,45 +593,58 @@ public:
 					// (they drop erfLIGHT_SHADE) - so re-upload each frame AND don't re-light.
 					bool   b_terrain   = prp->seterfFace[erfSOURCE_TERRAIN];
 
+					// Water is dynamic for the same reason but a different mechanism: the water
+					// simulation redraws its raster EVERY frame (the ripples ARE the texture -
+					// see CEntityWater, Water.cpp).  Cached once like a static texture, the
+					// surface freezes on whichever single frame of the simulation we happened to
+					// upload - so the ripples sit still and land somewhere different each load.
+					bool   b_water     = prp->seterfFace[erfSOURCE_WATER] ||
+					                     ptex->seterfFeatures[erfSOURCE_WATER];
+
+					// Anything whose pixels change per frame has to be re-uploaded per frame.
+					bool   b_dynamic   = b_terrain || b_water;
+
 					// Cache key: the mip's OWN raster, not the CTexture.  Which mip is resident
 					// changes as the camera moves, so a per-CTexture key would serve whichever
 					// level happened to be decoded first (wrong resolution) forever.  Per-raster
-					// keys let each level cache independently.  Terrain keeps the CTexture key:
-					// its pages are recomposited into recycled CTextures every frame and go
-					// through the dynamic-texture path, which owns one GPU texture per key.
-					const void* pv_key = b_terrain ? (const void*)ptex : (const void*)pras;
+					// keys let each level cache independently.  Dynamic surfaces keep the
+					// CTexture key: they go through the dynamic-texture path, which owns one
+					// persistent GPU texture per key and rewrites its pixels each frame.
+					const void* pv_key = b_dynamic ? (const void*)ptex : (const void*)pras;
 
 					if (b_pal8 || b_rgb16 || b_bumpcol)
 					{
 						b_clamp = pras->bNotTileable;
 
-						// Static world textures are persistent and cached by CTexture address;
-						// terrain is dynamic and re-uploaded every frame.  A texture whose upload
-						// FAILED caches a null handle - treat that as "known" (bTextureKnown) so we
-						// don't re-decode + re-upload it every frame for every polygon.  That retry
-						// storm on a large failing texture was the white-object + continuous-stutter
-						// bug (the frame time blew up and starved the rest of the scene).
-						bool b_known = !b_terrain && RenderD3D11::bTextureKnown(pv_key);
+						// Static world textures are persistent and cached by raster address;
+						// terrain and water are dynamic and re-uploaded every frame.  A texture
+						// whose upload FAILED caches a null handle - treat that as "known"
+						// (bTextureKnown) so we don't re-decode + re-upload it every frame for
+						// every polygon.  That retry storm on a large failing texture was the
+						// white-object + continuous-stutter bug (the frame time blew up and
+						// starved the rest of the scene).
+						bool b_known = !b_dynamic && RenderD3D11::bTextureKnown(pv_key);
 						if (b_known)
 						{
 							p_texhandle = RenderD3D11::GetTexture(pv_key);
 							if (b_bumpcol)
 								p_normalhandle = RenderD3D11::GetNormalTexture(pv_key);
 						}
-						else if (b_terrain)
+						else if (b_dynamic)
 						{
-							// A terrain page shared by several polygons only needs decoding +
-							// uploading once per frame; reuse it if a previous poly already did.
+							// A terrain page (or water surface) shared by several polygons only
+							// needs decoding + uploading once per frame; reuse it if a previous
+							// poly already did.
 							p_texhandle = RenderD3D11::GetDynamicTexture(pv_key);
 						}
 
-						if (!b_known && !b_terrain && (pras->iWidth > 8192 || pras->iHeight > 8192))
+						if (!b_known && !b_dynamic && (pras->iWidth > 8192 || pras->iHeight > 8192))
 						{
 							// Too large to upload safely (exceeds feature-level limits) / too
 							// expensive to decode - mark failed once and fall back to the flat path.
 							RenderD3D11::MarkTextureFailed(pv_key);
 						}
-						else if (b_terrain ? !p_texhandle : !b_known)
+						else if (b_dynamic ? !p_texhandle : !b_known)
 						{
 							// Colour-keyed textures (erfTRANSPARENT) use texel 0 as transparent.
 							// The flag can live on the polygon face or the texture itself.
@@ -660,7 +673,7 @@ public:
 							// (unlike the CPU rasteriser).  Matched to the asset by the same
 							// FNV-1a content hash the texture exporter uses to name the BMPs.
 							void* p_hires = 0;
-							if (!b_terrain && !b_transp && pu1_base && RenderD3D11::bHiResEnabled())
+							if (!b_dynamic && !b_transp && pu1_base && RenderD3D11::bHiResEnabled())
 							{
 								uint32 u4_hash = 2166136261u;			// FNV-1a
 								int    i_bpr   = i_w * (pras->iPixelBits >> 3);
@@ -767,7 +780,7 @@ public:
 							if (p_hires)
 								p_texhandle = p_hires;
 							else if (pu1_base)
-								p_texhandle = b_terrain
+								p_texhandle = b_dynamic
 								            ? RenderD3D11::UpdateDynamicTexture(pv_key, i_w, i_h, &s_scratch[0])
 								            : RenderD3D11::CreateTexture(pv_key, i_w, i_h, &s_scratch[0]);
 
