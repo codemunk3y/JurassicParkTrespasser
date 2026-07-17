@@ -151,6 +151,7 @@
 #include <crtdbg.h>
 #include "Lib/Renderer/Primitives/DrawTriangle.hpp"
 #include "Lib/Renderer/Primitives/FastBump.hpp"		// CBumpAnglePair (bump-map texel decode)
+#include "Lib/Loader/TextureManager.hpp"				// gtxmTexMan (texture pages are demand-paged)
 #include "Lib/Renderer/Material.hpp"				// CMaterial::rvSpecular (bump specular)
 #include "Lib/Renderer/Sky.hpp"
 #include "Lib/W95/Direct3D.hpp"
@@ -179,6 +180,84 @@ static bool bCullTexture = false;
 
 // Debug testing for hardware implementation.
 #define bTEST_HARDWARE_MATCH (0)
+
+// Per-pass budget of texture page-in requests, so pulling sharp mips in for newly seen
+// surfaces stays gradual; reset at the top of each mirrored pass.  See iSharpestMipLevel.
+static int s_i_mip_request_budget = 0;
+
+//******************************************************************************************
+//
+static int iSharpestMipLevel(const CTexture* ptex)
+//
+// Returns the sharpest mip level that can be drawn without forcing extra paging - the
+// largest-first level that is either already uploaded to the GPU or currently resident in
+// the texture manager's paged memory - or -1 if that holds for no level.
+//
+// The engine picks ONE mip per polygon (CRenderPolygon::SetMipLevel) because the software
+// rasteriser binds a single texture per polygon and cannot filter per pixel.  That choice is
+// made from the polygon's screen AREA, which collapses on a foreshortened polygon: a face at
+// a grazing angle is squeezed along one axis but stays long on the other, and a single area
+// number picks a level suited to the narrow axis, discarding the detail along the long one.
+// A drum's angled sides land on mip 4+ (8x8 of a 128x128 texture) and read as untextured.
+// The GPU has no such constraint - it selects a level per pixel and filters anisotropically -
+// so hand it the sharpest data available and let it do the minification.
+//
+// The engine only pages in what IT needs, and for a surface first seen at a distance that is
+// a small mip - so the sharpest readable level is blurry until you walk close enough for the
+// engine to want mip 0.  Asking for mip 0 ourselves fixes that: RequestMemory merely FLAGS
+// the pages (a background loader thread does the I/O), so it costs nothing on the render
+// thread; the level lands a few frames later and is uploaded then.  Once uploaded, the GPU
+// copy is immune to eviction and the texture is never requested again - so this converges
+// rather than thrashing.  Budgeted per pass all the same, so a scene full of new textures
+// cannot evict the engine's working set in one go.
+//
+// Absent pages read as ZEROS rather than faulting their data in, so residency must be
+// checked before reading pixels either way.
+//
+//**************************************
+{
+	int i_nmips = ptex->iGetNumMipLevels();
+
+	for (int i = 0; i < i_nmips; ++i)
+	{
+		CRaster* pras = ptex->prasGetTexture(i).ptGet();
+		if (!pras || !pras->pSurface || pras->iWidth <= 0)
+			continue;
+
+		if (RenderD3D11::bTextureKnown(pras))
+		{
+			// Already uploaded: usable whatever the CPU-side pages are now doing.  A known
+			// key with a null handle failed to upload and never will - skip to the next.
+			if (RenderD3D11::GetTexture(pras))
+				return i;
+			continue;
+		}
+
+		if (gtxmTexMan.bIsAvailable(pras->pSurface, pras->iByteSpan()))
+		{
+			// Settling for a blurry level: get the sharp one on its way for later frames.
+			// Only safe to request pages the manager actually owns - bIsMemoryPresent
+			// reports TRUE for anything outside its pageable range, so a FALSE (below)
+			// also proves the address is in range.  RequestMemory asserts that, and the
+			// assert compiles out in Release, so the order of these tests matters.
+			if (i > 0 && s_i_mip_request_budget > 0)
+			{
+				CRaster* pras_sharp = ptex->prasGetTexture(0).ptGet();
+				if (pras_sharp && pras_sharp->pSurface && pras_sharp->iWidth > 0 &&
+				    !RenderD3D11::bTextureKnown(pras_sharp) &&
+				    !gtxmTexMan.bIsAvailable(pras_sharp->pSurface, pras_sharp->iByteSpan()))
+				{
+					--s_i_mip_request_budget;
+					gtxmTexMan.RequestMemory(pras_sharp->pSurface, pras_sharp->iByteSpan());
+				}
+			}
+
+			return i;
+		}
+	}
+
+	return -1;
+}
 
 //******************************************************************************************
 //
@@ -452,6 +531,9 @@ public:
 
 			if (RenderD3D11::bBeginFrame(prasScreen->iWidth, prasScreen->iHeight))
 			{
+				// Fresh page-in budget for this pass (see iSharpestMipLevel).
+				s_i_mip_request_budget = 4;
+
 				// Mirror each polygon's screen-space vertices into the D3D11 backend.
 				// Slice 2a: flat-shade in the texture's representative colour
 				// (d3dpixColour); texture sampling + perspective-correct UV come in 2b.
@@ -465,10 +547,21 @@ public:
 						continue;
 
 					const CTexture* ptex = prp->ptexTexture.ptGet();
-					CRaster*        pras = ptex->prasGetTexture(0).ptGet();
+
+					// Texture pixels are demand-paged virtual memory (CTextureManager): mip 0 is
+					// packed on its own and only committed once something actually asks for it,
+					// since it is 3/4 of the whole texture budget.  Reading mip 0 unconditionally
+					// returned UNCOMMITTED (all-zero) pages for every texture the engine chose
+					// not to page in - which is why bump surfaces decoded flat (all-zero texels
+					// carry neither a colour index nor a normal).  Take the sharpest level that
+					// is actually readable and leave mip SELECTION to the GPU, which does it per
+					// pixel (see iSharpestMipLevel).  UVs are normalised, so which level we
+					// upload needs no geometry/UV change.
+					int      i_mip = iSharpestMipLevel(ptex);
+					CRaster* pras  = (i_mip >= 0) ? ptex->prasGetTexture(i_mip).ptGet() : 0;
 
 					// Resolve a D3D11 texture handle for this polygon, converting the raster
-					// (once, cached by CTexture address) to BGRA.  Two source formats:
+					// (once, cached by raster address) to BGRA.  Two source formats:
 					//  - 8-bit palettised: index through the raster's OWN attached palette
 					//    (pxf.ppalAttached).  The CLUT's source palette (ppcePalClut) is a
 					//    shared/placeholder palette for some textures and resolves to pure
@@ -500,6 +593,14 @@ public:
 					// (they drop erfLIGHT_SHADE) - so re-upload each frame AND don't re-light.
 					bool   b_terrain   = prp->seterfFace[erfSOURCE_TERRAIN];
 
+					// Cache key: the mip's OWN raster, not the CTexture.  Which mip is resident
+					// changes as the camera moves, so a per-CTexture key would serve whichever
+					// level happened to be decoded first (wrong resolution) forever.  Per-raster
+					// keys let each level cache independently.  Terrain keeps the CTexture key:
+					// its pages are recomposited into recycled CTextures every frame and go
+					// through the dynamic-texture path, which owns one GPU texture per key.
+					const void* pv_key = b_terrain ? (const void*)ptex : (const void*)pras;
+
 					if (b_pal8 || b_rgb16 || b_bumpcol)
 					{
 						b_clamp = pras->bNotTileable;
@@ -510,25 +611,25 @@ public:
 						// don't re-decode + re-upload it every frame for every polygon.  That retry
 						// storm on a large failing texture was the white-object + continuous-stutter
 						// bug (the frame time blew up and starved the rest of the scene).
-						bool b_known = !b_terrain && RenderD3D11::bTextureKnown(ptex);
+						bool b_known = !b_terrain && RenderD3D11::bTextureKnown(pv_key);
 						if (b_known)
 						{
-							p_texhandle = RenderD3D11::GetTexture(ptex);
+							p_texhandle = RenderD3D11::GetTexture(pv_key);
 							if (b_bumpcol)
-								p_normalhandle = RenderD3D11::GetNormalTexture(ptex);
+								p_normalhandle = RenderD3D11::GetNormalTexture(pv_key);
 						}
 						else if (b_terrain)
 						{
 							// A terrain page shared by several polygons only needs decoding +
 							// uploading once per frame; reuse it if a previous poly already did.
-							p_texhandle = RenderD3D11::GetDynamicTexture(ptex);
+							p_texhandle = RenderD3D11::GetDynamicTexture(pv_key);
 						}
 
 						if (!b_known && !b_terrain && (pras->iWidth > 8192 || pras->iHeight > 8192))
 						{
 							// Too large to upload safely (exceeds feature-level limits) / too
 							// expensive to decode - mark failed once and fall back to the flat path.
-							RenderD3D11::MarkTextureFailed(ptex);
+							RenderD3D11::MarkTextureFailed(pv_key);
 						}
 						else if (b_terrain ? !p_texhandle : !b_known)
 						{
@@ -543,6 +644,14 @@ public:
 
 							pras->Lock();
 							const uint8* pu1_base = (const uint8*)pras->pSurface;
+
+							// Decode only from pages the manager currently has committed.  An
+							// absent mip reads as zeros rather than faulting them in, and caching
+							// that would freeze the texture flat for the rest of the level.  The
+							// test is cheap (a page-presence lookup, not a decode), so it is fine
+							// to repeat it each frame until the pixels arrive.
+							if (pu1_base && !gtxmTexMan.bIsAvailable(pras->pSurface, pras->iByteSpan()))
+								pu1_base = 0;
 
 							// Hi-res GPU side-load (env TRESPASS_HIRES): for static, opaque
 							// textures, display an AI-upscaled image in place of the stock
@@ -562,7 +671,7 @@ public:
 									for (int b = 0; b < i_bpr; ++b)
 										u4_hash = (u4_hash ^ pb[b]) * 16777619u;
 								}
-								p_hires = RenderD3D11::CreateTextureHiRes(ptex, u4_hash);
+								p_hires = RenderD3D11::CreateTextureHiRes(pv_key, u4_hash);
 							}
 
 							if (!p_hires && pu1_base && b_pal8)
@@ -648,25 +757,32 @@ public:
 							}
 							pras->Unlock();
 
-							// CreateTextureHiRes already cached the hi-res SRV under ptex;
-							// otherwise upload the freshly-decoded stock texture.
+							// CreateTextureHiRes already cached the hi-res SRV under the key;
+							// otherwise upload the freshly-decoded stock texture.  With no
+							// readable pixels (mip not resident) upload NOTHING and cache
+							// nothing: s_scratch still holds the previous texture's pixels, and
+							// caching those would paint this surface with another texture's
+							// image.  Leaving the key uncached retries once the pixels page in;
+							// the polygon draws flat in the material colour until then.
 							if (p_hires)
 								p_texhandle = p_hires;
-							else
+							else if (pu1_base)
 								p_texhandle = b_terrain
-								            ? RenderD3D11::UpdateDynamicTexture(ptex, i_w, i_h, &s_scratch[0])
-								            : RenderD3D11::CreateTexture(ptex, i_w, i_h, &s_scratch[0]);
+								            ? RenderD3D11::UpdateDynamicTexture(pv_key, i_w, i_h, &s_scratch[0])
+								            : RenderD3D11::CreateTexture(pv_key, i_w, i_h, &s_scratch[0]);
 
-							// Upload the decoded normal map for the bump shader (cached per texture).
-							if (b_bumpcol)
-								p_normalhandle = RenderD3D11::CreateNormalTexture(ptex, i_w, i_h, &s_normscratch[0]);
+							// Upload the decoded normal map for the bump shader (cached per mip raster).
+							if (b_bumpcol && pu1_base && !p_hires)
+								p_normalhandle = RenderD3D11::CreateNormalTexture(pv_key, i_w, i_h, &s_normscratch[0]);
 						}
 					}
-					else
-					{
-						// d3dpixColour is 0x00RRGGBB; force opaque alpha.
+					// No texture to sample: either the material is a flat colour with no raster
+					// at all, or a textured surface produced no handle (its mip has not paged in
+					// yet, or the upload failed).  Both would otherwise sample the 1x1 white
+					// fallback and render a glaring white object, so draw flat in the material's
+					// representative colour.  d3dpixColour is 0x00RRGGBB; force opaque alpha.
+					if (!p_texhandle)
 						u4_col = (uint32)ptex->d3dpixColour | 0xFF000000;
-					}
 
 					// Base colour (white for textured, the flat material colour otherwise),
 					// modulated per-vertex by the CLUT's shading colour for Gouraud lighting.

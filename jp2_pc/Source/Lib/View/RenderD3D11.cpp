@@ -269,25 +269,43 @@ namespace
 		Log("TRESPASS_D3D11: device + swap chain created\n");
 	}
 
-	// Create a 1x1 white texture + SRV (bound for untextured polygons).
-	ID3D11ShaderResourceView* CreateSRVFromBGRA(int i_w, int i_h, const unsigned int* pu4)
+	// Create a texture + SRV from a BGRA image.
+	//
+	// With b_mipchain the texture gets a full mip chain, generated on the GPU.  The caller
+	// hands us the sharpest version of a texture it can get and lets the hardware pick and
+	// filter a level per pixel; the smaller levels are what it minifies WITH, so without
+	// them distant and grazing surfaces alias and shimmer.  1x1 helper textures (white,
+	// flat normal) pass false - there is nothing to generate.
+	ID3D11ShaderResourceView* CreateSRVFromBGRA(int i_w, int i_h, const unsigned int* pu4, bool b_mipchain = false)
 	{
+		// A full chain needs the levels allocated (MipLevels 0) and writable by the GPU, so
+		// such a texture cannot be IMMUTABLE with its pixels supplied at creation - mip 0 is
+		// uploaded separately below and the rest derived from it.
 		D3D11_TEXTURE2D_DESC td; ZeroMemory(&td, sizeof(td));
-		td.Width = i_w; td.Height = i_h; td.MipLevels = 1; td.ArraySize = 1;
+		td.Width = i_w; td.Height = i_h; td.ArraySize = 1;
+		td.MipLevels = b_mipchain ? 0 : 1;
 		td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
 		td.SampleDesc.Count = 1;
-		td.Usage = D3D11_USAGE_IMMUTABLE;
-		td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+		td.Usage     = b_mipchain ? D3D11_USAGE_DEFAULT : D3D11_USAGE_IMMUTABLE;
+		td.BindFlags = D3D11_BIND_SHADER_RESOURCE | (b_mipchain ? D3D11_BIND_RENDER_TARGET : 0);
+		td.MiscFlags = b_mipchain ? D3D11_RESOURCE_MISC_GENERATE_MIPS : 0;
 
 		D3D11_SUBRESOURCE_DATA sd; ZeroMemory(&sd, sizeof(sd));
 		sd.pSysMem = pu4;
 		sd.SysMemPitch = i_w * 4;
 
 		ID3D11Texture2D* p_tex = 0;
-		if (FAILED(s_pd3dDevice->CreateTexture2D(&td, &sd, &p_tex)) || !p_tex)
+		if (FAILED(s_pd3dDevice->CreateTexture2D(&td, b_mipchain ? 0 : &sd, &p_tex)) || !p_tex)
 			return 0;
 		ID3D11ShaderResourceView* p_srv = 0;
 		HRESULT hr = s_pd3dDevice->CreateShaderResourceView(p_tex, 0, &p_srv);
+		if (SUCCEEDED(hr) && b_mipchain)
+		{
+			// Colour-keyed texels are premultiplied-zero, which is exactly the form that
+			// survives averaging - so generated levels keep clean edges around cutouts.
+			s_pd3dContext->UpdateSubresource(p_tex, 0, 0, pu4, i_w * 4, 0);
+			s_pd3dContext->GenerateMips(p_srv);
+		}
 		p_tex->Release();
 		return SUCCEEDED(hr) ? p_srv : 0;
 	}
@@ -372,8 +390,15 @@ namespace
 		rd.FillMode = D3D11_FILL_SOLID; rd.CullMode = D3D11_CULL_NONE; rd.DepthClipEnable = TRUE;
 		if (FAILED(s_pd3dDevice->CreateRasterizerState(&rd, &s_pRaster))) { Log("TRESPASS_D3D11: CreateRasterizerState FAILED\n"); return; }
 
+		// Anisotropic: the whole point of handing mip selection to the GPU.  A polygon seen at
+		// a grazing angle is minified hard along one screen axis and barely at all along the
+		// other; an isotropic filter has to pick one level for both and blurs away everything
+		// on the long axis (the engine's own area-based mip choice fails the same way, which
+		// is why an angled surface used to read as untextured).  Anisotropy samples along the
+		// footprint's long axis and keeps that detail.
 		D3D11_SAMPLER_DESC smp; ZeroMemory(&smp, sizeof(smp));
-		smp.Filter   = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+		smp.Filter        = D3D11_FILTER_ANISOTROPIC;
+		smp.MaxAnisotropy = 16;
 		smp.AddressU = smp.AddressV = smp.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
 		smp.MaxLOD   = D3D11_FLOAT32_MAX;
 		if (FAILED(s_pd3dDevice->CreateSamplerState(&smp, &s_pSampWrap))) { Log("TRESPASS_D3D11: CreateSamplerState(wrap) FAILED\n"); return; }
@@ -613,7 +638,7 @@ namespace RenderD3D11
 	void* CreateTexture(const void* p_key, int i_width, int i_height, const unsigned int* pu4_bgra)
 	{
 		if (!s_pd3dDevice || i_width < 1 || i_height < 1) { s_tex_cache[p_key] = 0; return 0; }
-		ID3D11ShaderResourceView* p_srv = CreateSRVFromBGRA(i_width, i_height, pu4_bgra);
+		ID3D11ShaderResourceView* p_srv = CreateSRVFromBGRA(i_width, i_height, pu4_bgra, true);
 		if (!p_srv)
 		{
 			char sz[160];
@@ -656,7 +681,7 @@ namespace RenderD3D11
 		if (!LoadBmp24ToBGRA(sz_path, bgra, i_w, i_h))
 			return 0;						// no asset - caller decodes the stock texture
 
-		ID3D11ShaderResourceView* p_srv = CreateSRVFromBGRA(i_w, i_h, &bgra[0]);
+		ID3D11ShaderResourceView* p_srv = CreateSRVFromBGRA(i_w, i_h, &bgra[0], true);
 		if (!p_srv)
 			return 0;
 		s_tex_cache[p_key] = p_srv;
