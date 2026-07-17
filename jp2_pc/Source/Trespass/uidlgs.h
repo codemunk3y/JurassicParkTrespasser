@@ -180,7 +180,7 @@ public:
     void JumpLevel(int iDir);
 
     // Cheat: hold Ctrl+C to drift forward through the world, ignoring collisions.
-    // Called once per frame from InnerLoopCall.
+    // Called once per frame from InnerLoopCall (which also samples P for the 10x walk).
     void UpdateNoClip();
 
     BOOL            m_bPaused;

@@ -502,6 +502,13 @@ void CGameWnd::ClearGameStoppage(BOOL bStartSim)
 // the Beach.  (The old Ctrl+Shift+L cycler had its own copy of this list with InGen Lab
 // and InGen Town the wrong way round; both cheats now share this one.)
 //
+//
+// Debug cheat: set true while P is held, to walk forward at 10x.  Sampled here in the input
+// layer; read by Player.cpp (to walk forward with no key) and by the physics skeleton (which
+// applies the 10x, and DEFINES this - see InfoSkeleton.cpp for why it lives there).
+//
+extern bool g_bSpeedCheat;
+
 static const LPCSTR aszStoryLevels[] =
 {
     "be.scn",       // Beach
@@ -823,6 +830,9 @@ void CGameWnd::InnerLoopCall()
 
     // Cheat: Ctrl+C walks through the world (see UpdateNoClip).
     UpdateNoClip();
+
+    // Cheat: hold P to walk forward at 10x (applied in Player.cpp's move handling).
+    g_bSpeedCheat = (GetAsyncKeyState('P') & 0x8000) != 0;
 
     if (gpPlayer->bDead())
     {

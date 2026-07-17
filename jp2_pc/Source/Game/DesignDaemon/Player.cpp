@@ -1,6 +1,6 @@
 /**********************************************************************************************
  *
- * Copyright © DreamWorks Interactive. 1996
+ * Copyright ï¿½ DreamWorks Interactive. 1996
  *
  * Contents: The implementation of Player.hpp.
  *
@@ -444,29 +444,29 @@ namespace
 		// If we parameterise the rotation by the C element of the quaternion (t), then the
 		// rotation is:
 		//
-		//		R = (t, sqrt(1 - t²)A)
+		//		R = (t, sqrt(1 - tï¿½)A)
 		//
 		// We wish to minimise the product of r3_move (Q) and R.  This is done by maximising
 		// the absolute value of the product's C element.  By quaternion multiplication, this is:
 		//
 		//		C = Q.c R.c - Q.S R.S
-		//		  = Q.c t - Q.S A sqrt(1-t²)
-		//		  = X t - Y sqrt(1-t²)				(X == Q.c,  Y == Q.S A)
+		//		  = Q.c t - Q.S A sqrt(1-tï¿½)
+		//		  = X t - Y sqrt(1-tï¿½)				(X == Q.c,  Y == Q.S A)
 		//
-		//		dC/dt = 0 = X - Y (-2t) / (2 sqrt(1-t²))
-		//				  = X + Y t / sqrt(1-t²)
-		//		Y t/sqrt(1-t²) = -X
-		//		Y² t²/(1-t²) = X²
-		//		t²/(1-t²) = X²/Y²
-		//		t² = X²/Y² (1-t²)
-		//		(1 + X²/Y²)t² = X²/Y²
-		//		t² = X²/Y² / (1 + X²/Y²)
-		//		t² = X²/(X² + Y²)
-		//		t = ± X / sqrt(X² + Y²)
+		//		dC/dt = 0 = X - Y (-2t) / (2 sqrt(1-tï¿½))
+		//				  = X + Y t / sqrt(1-tï¿½)
+		//		Y t/sqrt(1-tï¿½) = -X
+		//		Yï¿½ tï¿½/(1-tï¿½) = Xï¿½
+		//		tï¿½/(1-tï¿½) = Xï¿½/Yï¿½
+		//		tï¿½ = Xï¿½/Yï¿½ (1-tï¿½)
+		//		(1 + Xï¿½/Yï¿½)tï¿½ = Xï¿½/Yï¿½
+		//		tï¿½ = Xï¿½/Yï¿½ / (1 + Xï¿½/Yï¿½)
+		//		tï¿½ = Xï¿½/(Xï¿½ + Yï¿½)
+		//		t = ï¿½ X / sqrt(Xï¿½ + Yï¿½)
 		//
 		//	To find which sign of t yields the true maximum absolute value of C, examine C again:
 		//
-		//		C = X t - Y sqrt(1-t²)
+		//		C = X t - Y sqrt(1-tï¿½)
 		//
 		//	X t should be the same sign as -Y, thus we want X Y t < 0.
 		//		
@@ -3055,15 +3055,35 @@ private:
 		// Move body.
 		//
 
-		if (!msgc.v2Move.bIsZero())
+		//
+		// Debug cheat (hold P, set by CGameWnd): walk forward without needing the walk key,
+		// for reaching far-off parts of a level while testing.  v2Move is the control input
+		// in HEAD space with +Y forward, so substitute a forward input.
+		//
+		// The SPEED does not come from here.  The length only becomes f_speed below, a
+		// CRating clamped to 1 that normal full input already saturates, and physics
+		// NORMALISES the target position anyway - so asking for a longer walk vector cannot
+		// make her faster.  The multiplier lives where the speed is really computed
+		// (CPhysicsInfoSkeleton::HandleMessage, InfoSkeleton.cpp).
+		//
+		// The length still matters for STABILITY though: the target is only that far ahead,
+		// and while sped up she covers a 1-unit target within a step, after which
+		// (target - position) points BACKWARDS and the pelvis controller fights itself.  So
+		// scale the target out by the same multiplier to keep the direction honest.
+		//
+		extern bool  g_bSpeedCheat;
+		extern const float g_fSpeedCheatMul;
+		CVector2<> v2_move = g_bSpeedCheat ? CVector2<>(0.0f, g_fSpeedCheatMul) : msgc.v2Move;
+
+		if (!v2_move.bIsZero())
 		{
 			// Walking. Set walk target to current position plus walk vector.
 			// Translate walk vector magnitude to speed rating.
 			// CODE GEN BUG HERE IN OPTIMIZED BUILD! RESULTS IN UNROTATED v3_walk.
 			CRotate3<> r3_head_global = p3Head.r3Rot * p3GetPlacement().r3Rot;
-			CVector3<> v3_walk = CVector3<>(msgc.v2Move) * r3_head_global;
+			CVector3<> v3_walk = CVector3<>(v2_move) * r3_head_global;
 			CVector3<> v3_target = p3GetPlacement().v3Pos + v3_walk;
-			float	   f_speed = Min(msgc.v2Move.tLen(), 1.0);
+			float	   f_speed = Min(v2_move.tLen(), 1.0);
 
 			msgpr.subMoveBody.Set(rt_high_urgency, f_speed, v3_target);
 
@@ -3603,7 +3623,7 @@ private:
 		//	Squaring both sides, expanding the vector equation to 3 scalar equations,
 		//	summing them, and rearranging, we have the quadratic equation
 		//
-		//		H² r² - 2 (H*S) r + S² - d² = 0
+		//		Hï¿½ rï¿½ - 2 (H*S) r + Sï¿½ - dï¿½ = 0
 		//
 
 		// Hand pos starts out as unit vector in desired direction.

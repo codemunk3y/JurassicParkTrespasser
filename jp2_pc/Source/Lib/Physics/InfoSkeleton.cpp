@@ -1,6 +1,6 @@
 /**********************************************************************************************
  *
- * Copyright © DreamWorks Interactive, 1996
+ * Copyright ï¿½ DreamWorks Interactive, 1996
  *
  * Contents:
  *		Implementation of InfoBio.hpp
@@ -130,6 +130,27 @@
 #include "Lib/Groff/VTParse.hpp"
 
 #define bVERIFY_MATRICES	VER_DEBUG
+
+//
+// Debug cheat: true while P is held (set by CGameWnd), applied to the player's walk speed in
+// CPhysicsInfoSkeleton::HandleMessage below.  DEFINED here, in the physics library that reads
+// it, rather than in the game window that sets it - GUIApp links this library too and would
+// otherwise fail to link against a symbol only trespass.exe defines.
+//
+bool g_bSpeedCheat = false;
+
+//
+// How much faster P walks.  Kept modest: this drives a 1998 biped controller that was never
+// meant to run fast, and at 10x she hit scenery hard enough to end up wedged inside it - the
+// solver then burns CPU on contact resolution while she cannot move at all.  Player.cpp reads
+// this too, to place the walk target proportionally further ahead (at speed she overshoots a
+// 1-unit target within a step, which flips the direction vector and makes the controller
+// fight itself).
+//
+// NB the explicit extern: a namespace-scope const has INTERNAL linkage in C++, so without it
+// Player.cpp cannot see this definition.
+//
+extern const float g_fSpeedCheatMul = 3.0f;
 
 static CColour clrBONES(1.0, 0.0, 0.0);
 static CColour clrINACTIVE(0.5, 0.0, 0.5);
@@ -422,6 +443,20 @@ static int aiPhysicsElements[] =
 				d3_move.Normalise();
 			f_move_sp = 12.0 * 5 * msgpr.subMoveBody.rtSpeed * rSpeedMultiplier;
 			//f_move_sp = msgpr.subMoveBody.rtSpeed;
+
+			//
+			// Debug cheat (hold P; the flag is set by CGameWnd).  This is the ONLY place the
+			// walk speed can be raised from: the move TARGET is normalised just above, so how
+			// far ahead the caller put it is discarded, and rtSpeed is a CRating - "between 0
+			// and 1 inclusive" - which normal full input already saturates.  Scaling either
+			// one does nothing, which is why asking for a 10-long walk vector changed nothing.
+			//
+			// Only the player reaches this: CPhysicsInfoHuman::HandleMessage chains to this
+			// function, whereas dinosaurs go through CPhysicsInfoBiped::HandleMessage, which
+			// reimplements this block rather than calling it.  So P cannot speed up a raptor.
+			//
+			if (g_bSpeedCheat)
+				f_move_sp *= g_fSpeedCheatMul;
 		}
 
 		if (msgpr.subOrientBody.rtUrgency != 0)
