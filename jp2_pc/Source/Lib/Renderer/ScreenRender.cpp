@@ -645,12 +645,16 @@ inline ESideOf esfSides
 
 		#else // VER_ASM
 
+			// NB: was 'r_dist', a name that has not existed since the variable above became
+			// f_dist - this branch has never been compiled (VER_ASM has been TRUE in every
+			// build mode that is actually used), so the rot went unnoticed.
+
 			// Is on the negative side?
-			if (r_dist < -r_plane_tolerance)
+			if (f_dist < -r_plane_tolerance)
 				esf_side |= esfINSIDE;
 
 			// Is on the positive side?
-			if (r_dist > r_plane_tolerance)
+			if (f_dist > r_plane_tolerance)
 				esf_side |= esfOUTSIDE;
 
 			// Must lay on the plane, do nothing.

@@ -225,10 +225,16 @@ extern uint32 u4TerrainFogMask;
 #define bCOUNT_PIXELS_WRITTEN (1)
 
 //
-// Specialized DrawSubtriangle functions for assembly.
+// Primitive types.
 //
-#if VER_ASM
-
+// These are plain aliases of the generic CScanline<> template - nothing here is
+// assembly-specific, and callers (TerrainTexture, WaveletQuadTree, Shadow, ...) use them
+// whether or not the asm specialisations exist.  They used to sit inside the VER_ASM block
+// below, which meant VER_ASM=FALSE failed to compile with ~156 errors, all of them variations
+// on "'TShadeTerrain': undeclared identifier" - so the engine had no working non-asm build,
+// and therefore no path off 32-bit (the asm is what pins it there).  The guard now starts
+// where the assembly actually does.
+//
 // Types.
 
 typedef CScanline<uint16, CGouraudNone, CTransparencyOff,
@@ -381,6 +387,10 @@ typedef CScanline<uint16, CGouraudNone, CTransparencyOff,
 //
 // Prototypes for assembly versions of subtriangle functions.
 //
+// These OVERRIDE the generic template implementation above.  Without them the generic C++
+// scanline runs instead - slower, but correct, and buildable for targets the asm cannot reach.
+//
+#if VER_ASM
 
 //*********************************************************************************************
 void DrawSubtriangle
