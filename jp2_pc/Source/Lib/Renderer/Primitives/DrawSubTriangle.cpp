@@ -245,4 +245,74 @@ static CDrawPolygon<TShadowTrans32>*		pdtriShadow32;
 //**********************************************************************************************
 
 // #if VER_ASM
+#else
+
+//**********************************************************************************************
+//
+// Terrain lighting, without assembly.
+//
+// A terrain page texel is not a colour but a packed CLUT index: (intensity << 8) | palette
+// index, which CClut::iGetIndex reassembles as 'i_index | (i_ramp << iShiftRamp)'.  The two
+// halves are rasterised by separate passes - TTexNoClutLinear writes the palette index into
+// the low byte, and this primitive Gouraud-shades the intensity into the high byte - so this
+// pass must leave the low byte of every pixel it touches alone.
+//
+// The generic template cannot do that.  It composes a whole destination pixel and assigns it,
+// and for TShadeTerrain (CMap<uint8> + CIndexNone + CColLookupOff) the pixel it composes is a
+// constant zero: nothing is ever indexed, so the source pixel stays 0 and no CLUT is applied.
+// It therefore wiped both the intensity and the texture index, leaving a page of index 0 -
+// which is why a non-asm build drew the terrain flat blue.  Shadows avoid this by way of an
+// Assign() overload keyed on CMapShadow::TDummy (MapT.hpp), which writes the high byte only;
+// that trick does not extend here because the value written is per-pixel, not constant.
+//
+// Mirrors the assembly in P5/P6/AMDK6 DrawSubTriangleGourEx.inl, which rasterises this
+// primitive left to right only.
+//
+void DrawSubtriangle(TShadeTerrain* pscan, CDrawPolygon<TShadeTerrain>* pdtri)
+{
+	Assert(pscan);
+	Assert(pdtri);
+	Assert(pdtri->prasScreen->iPixelBytes() == 2);
+
+	// Iterate through the scanlines that intersect the subtriangle.
+	do
+	{
+		int i_x_from = pscan->fxX.i4Fx >> 16;
+		int i_x_to   = (pscan->fxX.i4Fx + pdtri->fxLineLength.i4Fx) >> 16;
+
+		// Draw if there are pixels to draw, and this scanline is not being skipped.
+		// bEvenScanlinesOnly is 0 or 1, so 'iY & bEvenScanlinesOnly' drops the odd lines,
+		// as the assembly does.  (The generic template's version of this test keeps the odd
+		// lines and drops the even ones instead - it disagrees with both the assembly and
+		// the name, but it has never been compiled.  Left alone here: that template still
+		// serves primitives which have no assembly version, including in VER_ASM builds.)
+		if (i_x_to > i_x_from && !(pdtri->iY & bEvenScanlinesOnly))
+		{
+			TShadeTerrain::TGouraud gour(pscan->gourIntensity);
+
+			// Address the intensity byte of the pixel, not the pixel.
+			uint8* pu1_intensity = (uint8*)
+				((uint16*)pdtri->prasScreen->pSurface + pdtri->iLineStartIndex + i_x_to) + 1;
+
+			// As elsewhere in the rasteriser, the pixel count runs negative up to zero.
+			for (int i_pixel = i_x_from - i_x_to; i_pixel; i_pixel++)
+			{
+				pu1_intensity[i_pixel * 2] = uint8(gour.fxIntensity.i4Fx >> 16);
+
+				++gour;
+			}
+		}
+
+		// Increment the base edge.
+		++*pdtri->pedgeBase;
+
+		// Set the new length of the line to be rasterized.
+		pdtri->fxLineLength.i4Fx += pdtri->fxDeltaLineLength.i4Fx;
+
+		// Get new starting pixel TIndex for the scanline.
+		pdtri->iLineStartIndex += pdtri->prasScreen->iLinePixels;
+	}
+	while (++pdtri->iY < pdtri->iYTo);
+}
+
 #endif

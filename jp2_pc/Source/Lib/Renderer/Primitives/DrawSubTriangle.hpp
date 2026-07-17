@@ -388,7 +388,9 @@ typedef CScanline<uint16, CGouraudNone, CTransparencyOff,
 // Prototypes for assembly versions of subtriangle functions.
 //
 // These OVERRIDE the generic template implementation above.  Without them the generic C++
-// scanline runs instead - slower, but correct, and buildable for targets the asm cannot reach.
+// scanline runs instead - slower, but correct for every primitive except TShadeTerrain, which
+// the template cannot express at all (see DrawSubTriangle.cpp) and which therefore keeps a
+// hand-written C++ version below.
 //
 #if VER_ASM
 
@@ -710,6 +712,23 @@ void DrawSubtriangle
 );
 
 #endif // VER_ASM
+
+
+#if !VER_ASM
+
+//*********************************************************************************************
+//
+// Terrain lighting, which the generic template below cannot express: it writes whole
+// destination pixels, and this primitive must leave the low byte of each one alone.
+// Defined in DrawSubTriangle.cpp.
+//
+void DrawSubtriangle
+(
+	TShadeTerrain*				 pscan,		// Pointer to the CScanline base object.
+	CDrawPolygon<TShadeTerrain>* pdtri		// CDrawPolygon object.
+);
+
+#endif // !VER_ASM
 
 
 //
