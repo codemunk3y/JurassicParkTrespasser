@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright ï¿½ DreamWorks Interactive, 1997.
+ * Copyright © DreamWorks Interactive, 1997.
  *
  * Contents:
  *		Implementation of PipeLineHeap.hpp.

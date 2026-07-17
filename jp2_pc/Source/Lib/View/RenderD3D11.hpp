@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright ï¿½ 2026.  Experimental modernization.
+ * Copyright © 2026.  Experimental modernization.
  *
  * Contents:
  *		RenderD3D11 - an experimental Direct3D 11 present backend (env TRESPASS_D3D11).

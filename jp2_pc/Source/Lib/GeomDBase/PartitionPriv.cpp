@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright ï¿½ DreamWorks Interactive, 1998.
+ * Copyright © DreamWorks Interactive, 1998.
  *
  * Implementation of PartitionPriv.cpp.
  *

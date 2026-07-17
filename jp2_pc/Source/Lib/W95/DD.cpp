@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright ï¿½ DreamWorks Interactive. 1996
+ * Copyright © DreamWorks Interactive. 1996
  *
  * Implementation of dd.hpp.
  *

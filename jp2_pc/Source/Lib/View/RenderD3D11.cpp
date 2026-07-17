@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright ï¿½ 2026.  Experimental modernization.
+ * Copyright © 2026.  Experimental modernization.
  *
  * Implementation of RenderD3D11.hpp.
  *
