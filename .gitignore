@@ -18,6 +18,10 @@ jp2_pc/Build/
 #OpenTrespasser
 jp2_pc/Build/*
 
+# Crash dumps written by Windows Error Reporting (see HKLM ...\Windows Error
+# Reporting\LocalDumps\trespass.exe).  Full dumps, so large and machine-local.
+crashdumps/
+
 # Extracted texture dumps (large; regenerate with TRESPASS_DUMP_TEX - see
 # texture_export/README.md, which is kept).
 texture_export/*

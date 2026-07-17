@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive, 1998.
+ * Copyright ï¿½ DreamWorks Interactive, 1998.
  *
  * Implementation of Particles.hpp.
  *
@@ -1522,6 +1522,18 @@ public:
 		{	
 			if ((*it).bAdd(cam, tf3_to_norm_cam))
 			{
+				//
+				// The pipeline heap is a FIXED reservation (uMAX_NUM_POLYGONS) and paAlloc does
+				// not check it - only bCommit does, and the Assert that would have caught the
+				// overflow compiles out in Release.  Allocating blind once the heap is full
+				// therefore hands back a pointer past the end of the reserved block, and the
+				// assignment below access-violates.  The shape path already commits up front
+				// and gives up when the heap is full (PipeLine.cpp); do the same here and stop
+				// adding particles rather than corrupt memory.
+				//
+				if (!rplhHeap.darpolyPolygons.bCommit(1))
+					break;
+
 				CRenderPolygon& rpoly = *rplhHeap.darpolyPolygons.paAlloc(1);
 				rpoly = (*it).rpolyPolygon;
 				rpoly.paprvPolyVertices = (*it).rpolyPolygon.paprvPolyVertices;

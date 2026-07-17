@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive, 1997.
+ * Copyright ï¿½ DreamWorks Interactive, 1997.
  *
  * Contents:
  *		Implementation of PipeLineHeap.hpp.
@@ -68,7 +68,18 @@
 //
 
 // Maximum number of polygons to render.
-#define uMAX_NUM_POLYGONS	(20000)
+//
+// Was 20000, which was sized for the software renderer WITH the render cache on: that cache
+// collapses distant/complex objects to single billboard cards, so the pipeline only ever saw
+// a fraction of the world's real geometry.  The D3D11 backend disables the cache (see
+// bRenderCacheDisabled in PipeLine.cpp - cached billboards cannot be mirrored to the GPU), so
+// every object now arrives as full geometry and a dense level (InGen Town) blows straight
+// through 20000.  Overflow is not benign: the heap is a fixed reservation, and the callers
+// that allocate without committing first would write past the end of it.
+//
+// Raising this only reserves more VIRTUAL memory - CDArray commits pages as they are actually
+// used - so the cost to a scene that stays small is nil.
+#define uMAX_NUM_POLYGONS	(100000)
 
 // Maximum number of transformed points.
 #define uMAX_NUM_POINTS		(uMAX_NUM_POLYGONS * 4)

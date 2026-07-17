@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive, 1998.
+ * Copyright ï¿½ DreamWorks Interactive, 1998.
  *
  * Implementation of Overlay.hpp.
  *
@@ -140,7 +140,12 @@ const CColour clrStippleFlashRange = CColour(160, 160, 160);
 		float fScreenWidth  = prasMainScreen->iWidth  + 0.5f;
 		float fScreenHeight = prasMainScreen->iHeight + 0.5f;
 
-		// Add the overlay polygon.
+		// Add the overlay polygon.  paAlloc does not check the heap's fixed maximum (only
+		// bCommit does, and its Assert compiles out in Release), so allocating blind on a full
+		// heap would write past the end of the reserved block and access-violate.
+		if (!rplhHeap.darpolyPolygons.bCommit(1))
+			return;
+
 		CRenderPolygon& rpoly = *rplhHeap.darpolyPolygons.paAlloc(1);
 
 		rvVertices[0].v3Screen.tX = 0.5f;
