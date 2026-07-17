@@ -153,6 +153,21 @@ namespace RenderD3D11
 	// Only call these when b565DirectSupported() AND the source really is 565: the caller must
 	// check the raster's pixel format, not assume it.
 	//
+	//******************************************************************************************
+	//
+	// Read the last presented frame back into a 16-bit 565 buffer (i_dst_pitch = destination
+	// row stride in BYTES).  Returns false if nothing has been presented yet, or the read-back
+	// failed - the caller should leave its buffer alone in that case.
+	//
+	// For the pause menu, whose background is a darkened snapshot of the live frame: it used to
+	// BitBlt that out of the software back buffer, which no longer holds the scene now that the
+	// software rasteriser is skipped.  Only the scene's pillar-boxed viewport is returned (not
+	// the black bars), rescaled if the destination is a different size.
+	//
+	// Costs a GPU->CPU read-back, so it is for one-off use (opening a menu), never per frame.
+	//
+	bool  bCaptureBackBuffer565(int i_w, int i_h, void* pv_dst_565, int i_dst_pitch);
+
 	bool  b565DirectSupported();
 	void* UpdateDynamicTexture565(const void* p_key, int i_width, int i_height,
 	                              const void* pv_565, int i_src_pitch);

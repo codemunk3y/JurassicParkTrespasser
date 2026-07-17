@@ -8,6 +8,7 @@
 #include "resource.h"
 #include "tpassglobals.h"
 #include "rasterdc.hpp"
+#include "..\Lib\View\RenderD3D11.hpp"		// pause-menu background comes from the GPU frame
 #include "cdib.h"
 #include "uiwnd.h"
 #include "uidlgs.h"
@@ -179,31 +180,55 @@ void CTPassGlobals::CaptureBackground(bool bBackbuffer /* = false */)
     IDirectDrawSurface *    pSurface;
     HRESULT                 hr;
 
-    if (bBackbuffer)
+    //
+    // Under the D3D11 backend the scene is on the GPU, and the software back buffer only ever
+    // receives the sky (drawn before any geometry) - the rasteriser that used to fill in the
+    // rest is skipped.  So read the frame back from the GPU instead; m_prasBkgnd is a 16-bit
+    // raster, which is what bCaptureBackBuffer565 writes.
+    //
+    // Falls through to the DirectDraw path if the read-back fails, or D3D11 is off.
+    //
+    bool b_captured = false;
+
+    if (RenderD3D11::bActive())
     {
-        pSurface = prasMainScreen->pddsDraw;
+        m_prasBkgnd->Lock();
+        if (m_prasBkgnd->pSurface)
+            b_captured = RenderD3D11::bCaptureBackBuffer565(m_prasBkgnd->iWidth,
+                                                            m_prasBkgnd->iHeight,
+                                                            m_prasBkgnd->pSurface,
+                                                            m_prasBkgnd->iLineBytes());
+        m_prasBkgnd->Unlock();
     }
-    else
+
+    if (!b_captured)
     {
-        pSurface = prasMainScreen->GetPrimarySurface();
+        if (bBackbuffer)
+        {
+            pSurface = prasMainScreen->pddsDraw;
+        }
+        else
+        {
+            pSurface = prasMainScreen->GetPrimarySurface();
+        }
+
+        hr = pSurface->GetDC(&hdcSrc);
+
+        hdcDst = m_prasBkgnd->hdcGet();
+
+        BitBlt(hdcDst,
+               0,
+               0,
+               m_prasBkgnd->iWidth,
+               m_prasBkgnd->iHeight,
+               hdcSrc,
+               0,
+               0,
+               SRCCOPY);
+
+        pSurface->ReleaseDC(hdcSrc);
+        m_prasBkgnd->ReleaseDC(hdcDst);
     }
-
-    hr = pSurface->GetDC(&hdcSrc);
-
-    hdcDst = m_prasBkgnd->hdcGet();
-
-    BitBlt(hdcDst, 
-           0, 
-           0, 
-           m_prasBkgnd->iWidth, 
-           m_prasBkgnd->iHeight,
-           hdcSrc,
-           0,
-           0,
-           SRCCOPY);
-
-    pSurface->ReleaseDC(hdcSrc);
-    m_prasBkgnd->ReleaseDC(hdcDst);
 
     hdcDst = m_prasBkgnd->hdcGet();
     hdcMini = m_prasMiniBkgnd->hdcGet();

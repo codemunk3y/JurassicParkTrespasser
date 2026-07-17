@@ -87,6 +87,19 @@ namespace
 	UINT  s_u_width      = 0;
 	UINT  s_u_height     = 0;
 
+	// ---- Last presented frame, kept for the pause menu ------------------------------------
+	// The pause menu uses a darkened snapshot of the live frame as its background.  It used to
+	// BitBlt that out of the software back buffer, but the software rasteriser no longer draws
+	// the scene - so the frame has to come from here instead.  The swap chain is
+	// SWAP_EFFECT_DISCARD, i.e. the back buffer is undefined AFTER Present, so the copy must be
+	// taken just BEFORE presenting.  It is a GPU-side full-screen copy: fractions of a ms.
+	ID3D11Texture2D* s_pCaptureTex   = 0;		// copy of the last presented frame (BGRA)
+	bool             s_b_capture_ok  = false;	// s_pCaptureTex holds a real frame
+
+	// The scene occupies a pillar-boxed viewport inside the back buffer, so a capture has to
+	// take that sub-rect, not the whole surface (else it includes the black bars).
+	UINT  s_vp_x = 0, s_vp_y = 0, s_vp_w = 0, s_vp_h = 0;
+
 	// Backbuffer clear colour.  Defaults to the old diagnostic teal; the caller overrides it
 	// each frame with the sky's fog colour (SetClearColour) so the sky region isn't teal.
 	float s_clear_r      = 0.10f;
@@ -560,6 +573,7 @@ namespace
 			if (it->second.pTex) it->second.pTex->Release();
 		}
 		s_dyn_cache.clear();
+		if (s_pCaptureTex)    { s_pCaptureTex->Release();    s_pCaptureTex    = 0; s_b_capture_ok = false; }
 		if (s_pSkyImgSRV)     { s_pSkyImgSRV->Release();     s_pSkyImgSRV     = 0; }
 		if (s_pSkyImgTex)     { s_pSkyImgTex->Release();     s_pSkyImgTex     = 0; s_sky_img_w = s_sky_img_h = 0; }
 		if (s_pSkyDepthState) { s_pSkyDepthState->Release(); s_pSkyDepthState = 0; }
@@ -901,6 +915,11 @@ namespace RenderD3D11
 			vp.TopLeftX = (s_u_width - vp.Width) * 0.5f; vp.TopLeftY = (s_u_height - vp.Height) * 0.5f;
 			vp.MinDepth = 0.0f; vp.MaxDepth = 1.0f;
 			s_pd3dContext->RSSetViewports(1, &vp);
+
+			// Remember it: a frame capture must read this sub-rect, not the whole back
+			// buffer, or it picks up the pillar-box bars (see bCaptureBackBuffer565).
+			s_vp_x = (UINT)vp.TopLeftX; s_vp_y = (UINT)vp.TopLeftY;
+			s_vp_w = (UINT)vp.Width;    s_vp_h = (UINT)vp.Height;
 			s_pd3dContext->RSSetState(s_pRaster);
 
 			const float af_clear[4] = { s_clear_r, s_clear_g, s_clear_b, 1.0f };
@@ -983,6 +1002,92 @@ namespace RenderD3D11
 		return s_frame_open;
 	}
 
+	//******************************************************************************************
+	//
+	// Copy the just-rendered back buffer aside, so the pause menu can use it later.  Called
+	// from Present, immediately before the Present itself.
+	//
+	void CaptureFrame_()
+	{
+		if (!s_pd3dDevice || !s_pSwapChain) return;
+
+		ID3D11Texture2D* p_bb = 0;
+		if (FAILED(s_pSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&p_bb)) || !p_bb)
+			return;
+
+		if (!s_pCaptureTex)
+		{
+			// Same shape/format as the back buffer, but a plain GPU-side copy target.
+			D3D11_TEXTURE2D_DESC td; ZeroMemory(&td, sizeof(td));
+			p_bb->GetDesc(&td);
+			td.Usage = D3D11_USAGE_DEFAULT;
+			td.BindFlags = 0;
+			td.CPUAccessFlags = 0;
+			td.MiscFlags = 0;
+			if (FAILED(s_pd3dDevice->CreateTexture2D(&td, 0, &s_pCaptureTex)) || !s_pCaptureTex)
+			{
+				s_pCaptureTex = 0;
+				p_bb->Release();
+				return;
+			}
+		}
+
+		s_pd3dContext->CopyResource(s_pCaptureTex, p_bb);
+		p_bb->Release();
+		s_b_capture_ok = true;
+	}
+
+	bool bCaptureBackBuffer565(int i_w, int i_h, void* pv_dst_565, int i_dst_pitch)
+	{
+		if (!s_pd3dDevice || !s_pCaptureTex || !s_b_capture_ok || !pv_dst_565) return false;
+		if (i_w < 1 || i_h < 1 || s_vp_w < 1 || s_vp_h < 1) return false;
+
+		// Pull the scene's viewport sub-rect down to the CPU through a staging texture -
+		// the only way to read GPU memory back.  One-off, when the menu opens.
+		D3D11_TEXTURE2D_DESC td; ZeroMemory(&td, sizeof(td));
+		td.Width = s_vp_w; td.Height = s_vp_h; td.MipLevels = 1; td.ArraySize = 1;
+		td.Format = DXGI_FORMAT_B8G8R8A8_UNORM; td.SampleDesc.Count = 1;
+		td.Usage = D3D11_USAGE_STAGING;
+		td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+
+		ID3D11Texture2D* p_stage = 0;
+		if (FAILED(s_pd3dDevice->CreateTexture2D(&td, 0, &p_stage)) || !p_stage)
+			return false;
+
+		D3D11_BOX box;
+		box.left = s_vp_x; box.top = s_vp_y; box.front = 0;
+		box.right = s_vp_x + s_vp_w; box.bottom = s_vp_y + s_vp_h; box.back = 1;
+		s_pd3dContext->CopySubresourceRegion(p_stage, 0, 0, 0, 0, s_pCaptureTex, 0, &box);
+
+		D3D11_MAPPED_SUBRESOURCE ms;
+		bool b_ok = false;
+		if (SUCCEEDED(s_pd3dContext->Map(p_stage, 0, D3D11_MAP_READ, 0, &ms)))
+		{
+			// BGRA -> 565, nearest-neighbour if the destination is a different size (it is
+			// normally identical - the viewport is the render size - so this is a no-op scale).
+			for (int y = 0; y < i_h; ++y)
+			{
+				int i_sy = (int)((unsigned)y * s_vp_h / (unsigned)i_h);
+				const unsigned char* p_row = (const unsigned char*)ms.pData + (size_t)i_sy * ms.RowPitch;
+				unsigned short*      p_dst = (unsigned short*)((unsigned char*)pv_dst_565 + (size_t)y * i_dst_pitch);
+
+				for (int x = 0; x < i_w; ++x)
+				{
+					int i_sx = (int)((unsigned)x * s_vp_w / (unsigned)i_w);
+					const unsigned char* p = p_row + (size_t)i_sx * 4;		// B,G,R,A
+					p_dst[x] = (unsigned short)(((p[2] & 0xF8) << 8) |
+					                            ((p[1] & 0xFC) << 3) |
+					                            ( p[0] >> 3));
+				}
+			}
+			s_pd3dContext->Unmap(p_stage, 0);
+			b_ok = true;
+		}
+
+		p_stage->Release();
+		return b_ok;
+	}
+
 	void Present()
 	{
 		if (!bActive() || !s_pSwapChain) return;
@@ -1063,6 +1168,11 @@ namespace RenderD3D11
 				}
 			}
 		}
+
+		// Snapshot the finished frame BEFORE presenting - the swap chain discards the back
+		// buffer's contents on Present, so afterwards there is nothing left to copy.  The
+		// pause menu reads this (see bCaptureBackBuffer565).
+		CaptureFrame_();
 
 		HRESULT hr_present = s_pSwapChain->Present(0, 0);
 		s_frame_open = false;			// frame consumed; next bBeginFrame starts a fresh one
