@@ -496,6 +496,116 @@ void CGameWnd::ClearGameStoppage(BOOL bStartSim)
 }
 
 
+//
+// The game's levels in STORY order.  This is NOT the alphabetical order of the scene
+// files - they are abbreviations, so sorting by filename puts both Ascent levels before
+// the Beach.  (The old Ctrl+Shift+L cycler had its own copy of this list with InGen Lab
+// and InGen Town the wrong way round; both cheats now share this one.)
+//
+static const LPCSTR aszStoryLevels[] =
+{
+    "be.scn",       // Beach
+    "jr.scn",       // Jungle Road
+    "ij.scn",       // Industrial Jungle
+    "it.scn",       // InGen Town
+    "lab.scn",      // InGen Laboratories
+    "as.scn",       // Ascent, part 1
+    "as2.scn",      // Ascent, part 2
+    "sum.scn",      // Summit
+};
+static const int iStoryLevels = sizeof(aszStoryLevels) / sizeof(aszStoryLevels[0]);
+
+
+//+--------------------------------------------------------------------------
+//
+//  Member:     CGameWnd::JumpLevel
+//
+//  Synopsis:   Cheat: load the next (iDir +1) or previous (iDir -1) level.
+//
+//---------------------------------------------------------------------------
+void CGameWnd::JumpLevel(int iDir)
+{
+    // m_szSCN is the scene the current level was loaded from.
+    int iCur = -1;
+    for (int i = 0; i < iStoryLevels; ++i)
+    {
+        if (_stricmp(g_CTPassGlobals.m_szSCN, aszStoryLevels[i]) == 0)
+        {
+            iCur = i;
+            break;
+        }
+    }
+
+    // Not one of the story levels (a test scene, say): there is no "next" from
+    // outside the sequence, so enter it at whichever end we are heading towards.
+    int iNext = (iCur < 0) ? ((iDir > 0) ? 0 : iStoryLevels - 1) : iCur + iDir;
+
+    if (iNext < 0 || iNext >= iStoryLevels)
+        return;         // already at the first/last level - nowhere to jump
+
+    //
+    // Hand the load to the world as a DEFERRED one rather than calling LoadLevel
+    // here: the game loop picks it up between steps, where it stops the sim, shows
+    // the loading message and tears the old level down safely.  Doing that from
+    // inside a key handler would destroy the world mid-message-dispatch.
+    //
+    wWorld.DeferredLoad(aszStoryLevels[iNext]);
+}
+
+
+//+--------------------------------------------------------------------------
+//
+//  Member:     CGameWnd::UpdateNoClip
+//
+//  Synopsis:   Cheat: hold Ctrl+C to drift forward through the world, ignoring
+//              collisions.  For skipping puzzles when testing.
+//
+//---------------------------------------------------------------------------
+void CGameWnd::UpdateNoClip()
+{
+    // How far to drift per frame, in world units.
+    const float fNOCLIP_SPEED = 0.12f;
+
+    static bool s_bGhosting = false;
+
+    bool b_want = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0 &&
+                  (GetAsyncKeyState('C')        & 0x8000) != 0;
+
+    if (b_want != s_bGhosting)
+    {
+        //
+        // Physics owns the player's position, so she has to come OUT of the
+        // simulation before we can place her by hand - otherwise collision
+        // resolution just shoves her back out of whatever she is inside.  This is
+        // the same pairing GUIApp's player-physics toggle uses.  bPhysics alone is
+        // not enough: it only stops her issuing movement requests.
+        //
+        gpPlayer->bPhysics = !b_want;
+
+        if (b_want)
+            gpPlayer->PhysicsDeactivate();
+        else
+            gpPlayer->PhysicsActivate();
+
+        s_bGhosting = b_want;
+    }
+
+    if (!s_bGhosting)
+        return;
+
+    // Drift along the camera's facing; +Y is forward in this engine.
+    CCamera* pcam = CWDbQueryActiveCamera().tGet();
+    if (!pcam)
+        return;
+
+    CVector3<>    v3_fwd = d3YAxis * pcam->pr3Presence().r3Rot;
+    CPlacement3<> p3     = gpPlayer->pr3Presence();
+
+    p3.v3Pos += v3_fwd * fNOCLIP_SPEED;
+    gpPlayer->Move(p3);
+}
+
+
 void CGameWnd::OnKey(UINT vk, BOOL fDown, int cRepeat, UINT flags)
 {
     if (m_puictlCheat->GetVisible())
@@ -526,6 +636,18 @@ void CGameWnd::OnKey(UINT vk, BOOL fDown, int cRepeat, UINT flags)
 
                 ClearGameStoppage(TRUE);
             }
+            break;
+
+        // Cheat: Ctrl+. jumps forward a level, Ctrl+, jumps back (story order).
+        // Without Ctrl these fall through to the game's own handling.
+        case VK_OEM_PERIOD:     // . and >
+            if (GetAsyncKeyState(VK_CONTROL) < 0)
+                JumpLevel(1);
+            break;
+
+        case VK_OEM_COMMA:      // , and <
+            if (GetAsyncKeyState(VK_CONTROL) < 0)
+                JumpLevel(-1);
             break;
 
 		case 0xbb:
@@ -677,18 +799,14 @@ void CGameWnd::OnKey(UINT vk, BOOL fDown, int cRepeat, UINT flags)
 #endif
 
 		// DIAGNOSTIC: Ctrl+Shift+L cycles to the next game level, so all 8
-		// levels' textures can be streamed in and dumped in one session.
+		// levels' textures can be streamed in and dumped in one session.  Unlike
+		// Ctrl+. this WRAPS, so a single session can walk the whole set.
 		case 'L':
 			if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) &&
 			    (GetAsyncKeyState(VK_SHIFT)   & 0x8000))
 			{
-				static const char* s_apszLevels[] =
-				{
-					"be.scn", "jr.scn", "ij.scn", "lab.scn",
-					"it.scn", "as.scn", "as2.scn", "sum.scn"
-				};
 				static int s_i_level = 0;
-				wWorld.DeferredLoad(s_apszLevels[s_i_level % 8]);
+				wWorld.DeferredLoad(aszStoryLevels[s_i_level % iStoryLevels]);
 				s_i_level++;
 			}
 			break;
@@ -702,6 +820,9 @@ void CGameWnd::InnerLoopCall()
     {
         return;
     }
+
+    // Cheat: Ctrl+C walks through the world (see UpdateNoClip).
+    UpdateNoClip();
 
     if (gpPlayer->bDead())
     {

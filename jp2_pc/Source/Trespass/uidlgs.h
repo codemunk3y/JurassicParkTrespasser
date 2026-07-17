@@ -176,6 +176,13 @@ public:
     void SetupGameStoppage();
     void ClearGameStoppage(BOOL bStartSim);
 
+    // Cheat: jump to the next (iDir +1) or previous (iDir -1) level in STORY order.
+    void JumpLevel(int iDir);
+
+    // Cheat: hold Ctrl+C to drift forward through the world, ignoring collisions.
+    // Called once per frame from InnerLoopCall.
+    void UpdateNoClip();
+
     BOOL            m_bPaused;
     int             m_iClear;
     CUIEditbox *    m_puictlCheat;
