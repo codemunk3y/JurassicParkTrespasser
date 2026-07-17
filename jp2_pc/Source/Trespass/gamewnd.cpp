@@ -1023,10 +1023,20 @@ void CGameWnd::DrawWndInfo(CRaster * pRaster, RECT * prc)
 	                float f_fr = (float)s_i_frames;
 	                #define MSPF(ps) ((ps).fSeconds() * 1000.0f / f_fr)
 
-	                FILE* pf = fopen(ach_path, "w");
+	                // APPEND, numbering each window.  Overwriting meant only the last window
+	                // survived, so a reading depended entirely on where the player happened to
+	                // be standing - and successive windows could not be compared at all.  With
+	                // every window kept, standing still gives repeated windows of the same
+	                // scene: if those climb, the per-window Reset() is not working; if they are
+	                // steady, differences between runs are the scene, not a measurement bug.
+	                static int s_i_dump = 0;
+	                ++s_i_dump;
+
+	                FILE* pf = fopen(ach_path, "a");
 	                if (pf)
 	                {
-	                    fprintf(pf, "Trespasser render profile - averaged over %d frames\n\n", s_i_frames);
+	                    fprintf(pf, "\n================ window %d (%d frames) ================\n",
+	                            s_i_dump, s_i_frames);
 	                    fprintf(pf, "KEY STAGES (ms/frame, single CPU thread)\n");
 	                    fprintf(pf, "  Frame TOTAL   : %6.2f\n", MSPF(proProfile.psFrame));
 	                    fprintf(pf, "   Step (sim)   : %6.2f   [AI %5.2f  Physics %5.2f]\n",
@@ -1037,15 +1047,35 @@ void CGameWnd::DrawWndInfo(CRaster * pRaster, RECT * prc)
 	                            MSPF(proProfile.psRenderShape));
 	                    fprintf(pf, "    Presort     : %6.2f   (DEPTH SORT + quicksort + splits)\n",
 	                            MSPF(proProfile.psPresort));
-	                    fprintf(pf, "    DrawPolygon : %6.2f   (software FILL - scales with pixels/res)\n",
-	                            MSPF(proProfile.psDrawPolygon));
+	                    // psDrawPolygon brackets the whole VIRTUAL DrawPolygons call
+	                    // (PipeLine.cpp), so under TRESPASS_D3D11 it times the GPU MIRROR
+	                    // (texture resolve + vertex build + submit) and NOT the software
+	                    // fill, which the mirror skips.  Labelling it "software FILL" sent
+	                    // us looking for a rasteriser that was already gone.
+	                    fprintf(pf, "    DrawPolygon : %6.2f   (%s)\n",
+	                            MSPF(proProfile.psDrawPolygon),
+	                            RenderD3D11::bEnabled() ? "D3D11: GPU mirror; software fill skipped"
+	                                                    : "software FILL - scales with pixels/res");
 	                    fprintf(pf, "    TerrainUpd  : %6.2f\n", MSPF(proProfile.psTerrainUpdate));
-	                    fprintf(pf, "    ClearScreen : %6.2f\n", MSPF(proProfile.psClearScreen));
+	                    // Brackets ClearMemSurfaces, which also draws the sky - and under
+	                    // D3D11 captures it full-screen for the GPU blit.
+	                    fprintf(pf, "    ClearScreen : %6.2f   (%s)\n",
+	                            MSPF(proProfile.psClearScreen),
+	                            RenderD3D11::bEnabled() ? "clear + sky draw + sky capture for the GPU"
+	                                                    : "clear + sky draw");
 	                    fprintf(pf, "    BeginFrame  : %6.2f\n", MSPF(proProfile.psBeginFrame));
 	                    fprintf(pf, "    EndFrame    : %6.2f   [Flip %5.2f]\n",
 	                            MSPF(proProfile.psEndFrame), MSPF(proProfile.psFlip));
-	                    fprintf(pf, "  Render polys/frame : %.0f\n",
-	                            proProfile.psDrawPolygon.iGetCount() / f_fr);
+	                    // psDrawPolygon carries no COUNT - PipeLine adds only cycles to it, so
+	                    // this always printed 0 and was useless.  psPresort counts the polygons
+	                    // it sorts, which is the same list the rasteriser/mirror then walks.
+	                    // Reporting that, and the per-polygon cost, lets readings taken at
+	                    // different viewpoints be compared at all - ms/frame alone cannot
+	                    // distinguish "my change got slower" from "there is more on screen".
+	                    float f_polys = proProfile.psPresort.iGetCount() / f_fr;
+	                    fprintf(pf, "  Render polys/frame : %.0f\n", f_polys);
+	                    fprintf(pf, "  DrawPolygon us/poly: %.2f   <- compare THIS across runs\n",
+	                            f_polys > 0.0f ? MSPF(proProfile.psDrawPolygon) * 1000.0f / f_polys : 0.0f);
 	                    fprintf(pf, "\n---- full normalised tree (ms per COUNT) ----\n");
 	                    fputs((const char*)strbuf, pf);
 	                    fclose(pf);
