@@ -842,6 +842,33 @@ public:
 						av[iv].fV      = prv->tcTex.tY;
 					}
 
+					//
+					// Water: draw it 50% translucent rather than solid.
+					//
+					// The software renderer fakes water's translucency with a 50% STIPPLE (the
+					// erfDITHER branch in Water.cpp picks CTransparencyStipple), because
+					// CEntityWater::bAlpha is only true with the legacy D3D driver's alpha
+					// water - and we don't use that driver, so it is false.  That means
+					// LightBlend fills the water table with plain screen colours (the
+					// lbsNonAlphaWater branch), which our 16-bit decode already reads
+					// correctly - they are simply meant to be stippled, not drawn solid.
+					// u2GetAlphaSolidColour spells the intent out: "the solid colour that when
+					// 50% stippled will approximate the color that would result using the
+					// normal alpha blend".
+					//
+					// The GPU can just do the blend properly, which is both correct and
+					// smoother than a dither pattern.  Colour is PREMULTIPLIED to match the
+					// (ONE, INV_SRC_ALPHA) blend state: rgb and alpha both scale by 0.5, so
+					// the pixel shader's texture * vertex-colour lands on 0.5*tex over 0.5*dst.
+					// The vertex colour also replaces the CLUT shading, as the software water
+					// path is Gouraud-off - its raster is already shaded by the simulation.
+					//
+					if (b_water)
+					{
+						for (int iv = 0; iv < i_n; ++iv)
+							av[iv].u4Color = 0x80808080u;
+					}
+
 					// Bump surfaces with a decoded normal map go through the bump pipeline,
 					// which lights each texel by N.L against the polygon's own light
 					// (prp->Bump.d3Light, already in the surface's object/texture space, so
