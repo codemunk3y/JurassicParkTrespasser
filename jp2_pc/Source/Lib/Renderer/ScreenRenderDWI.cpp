@@ -886,8 +886,31 @@ public:
 						if (f_len > 1e-6f) { f_lx /= f_len; f_ly /= f_len; f_lz /= f_len; }
 						float f_str  = (float)prp->Bump.lvStrength;
 						float f_amb  = (float)prp->Bump.lvAmbient;
-						float f_spec = (ptex->ppcePalClut && ptex->ppcePalClut->pmatMaterial)
-						             ? (float)ptex->ppcePalClut->pmatMaterial->rvSpecular : 0.0f;
+
+						//
+						// Specular, as the engine models it (CMaterial::fSpecular):
+						//
+						//   - It applies ONLY when rvSpecular > rvDiffuse; below that the engine
+						//     returns 0 outright.  Gate here by passing 0, so the shader has
+						//     nothing to switch on and matte surfaces are untouched.
+						//   - Sharpness is a linear ramp between two cone COSINES, not a Phong
+						//     exponent: full strength at cos >= the light's angular size
+						//     (Bump.angwSize), falling to zero at angwSpecular * angwSize.  Both
+						//     travel per vertex; the shader ports fAngularStrength.
+						//
+						// angwSize rides along on SBumpLighting (via SLightInfo) and needed no
+						// new plumbing - only angwSpecular had to be fetched from the material.
+						//
+						const CMaterial* pmat = ptex->ppcePalClut ? ptex->ppcePalClut->pmatMaterial : 0;
+
+						float f_spec      = 0.0f;
+						float f_angw_spec = 1.0f;
+						if (pmat && pmat->rvSpecular > pmat->rvDiffuse)
+						{
+							f_spec      = (float)pmat->rvSpecular;
+							f_angw_spec = (float)pmat->angwSpecular;
+						}
+						float f_angw_size = (float)prp->Bump.angwSize;
 
 						RenderD3D11::SBumpVert bv[64];
 						for (int iv = 0; iv < i_n; ++iv)
@@ -901,9 +924,11 @@ public:
 							bv[iv].fU = prv->tcTex.tX;
 							bv[iv].fV = prv->tcTex.tY;
 							bv[iv].fLx = f_lx; bv[iv].fLy = f_ly; bv[iv].fLz = f_lz;
-							bv[iv].fLStrength = f_str;
-							bv[iv].fLAmbient  = f_amb;
-							bv[iv].fSpecular  = f_spec;
+							bv[iv].fLStrength    = f_str;
+							bv[iv].fLAmbient     = f_amb;
+							bv[iv].fSpecular     = f_spec;
+							bv[iv].fAngwSize     = f_angw_size;
+							bv[iv].fAngwSpecular = f_angw_spec;
 						}
 						RenderD3D11::SubmitBumpPolygon(bv, i_n, p_texhandle, p_normalhandle, b_clamp);
 					}

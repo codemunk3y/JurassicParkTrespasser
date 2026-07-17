@@ -163,6 +163,13 @@ namespace RenderD3D11
 		float        fLStrength;			// Directional light strength.
 		float        fLAmbient;				// Ambient light term.
 		float        fSpecular;				// Material specular intensity (rvSpecular; 0 = matte).
+
+		// The engine's specular falloff is a linear ramp between two cone COSINES, not a
+		// Phong lobe: full strength at cos >= fAngwSize (the light's angular size), zero
+		// below fAngwSpecular * fAngwSize, linear between (CMaterial::fSpecular ->
+		// fAngularStrength, Material.hpp).  Both are cosines, so 1 = a zero-width angle.
+		float        fAngwSize;				// Cosine of the light's angular size.
+		float        fAngwSpecular;			// Material's specular sharpness (1 = mirror).
 	};
 
 	// Normal-map SRV cache, parallel to the colour texture cache and keyed the same way

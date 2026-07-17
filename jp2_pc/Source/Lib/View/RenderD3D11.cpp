@@ -158,8 +158,8 @@ namespace
 	// object/texture-space light: light1 = (unit dir.xyz, strength), light2 = (ambient, spec).
 	const char* k_psz_bump_vs =
 		"cbuffer CbView : register(b0) { float4 gViewParams; }\n"
-		"struct VSIn  { float4 sr : POSITION; float4 col : COLOR0; float2 uv : TEXCOORD0; float4 light1 : TEXCOORD1; float2 light2 : TEXCOORD2; };\n"
-		"struct VSOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; float4 light1 : TEXCOORD1; float2 light2 : TEXCOORD2; };\n"
+		"struct VSIn  { float4 sr : POSITION; float4 col : COLOR0; float2 uv : TEXCOORD0; float4 light1 : TEXCOORD1; float4 light2 : TEXCOORD2; };\n"
+		"struct VSOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; float4 light1 : TEXCOORD1; float4 light2 : TEXCOORD2; };\n"
 		"VSOut main(VSIn i) {\n"
 		"  float w = 1.0 / max(i.sr.w, 1e-6);\n"
 		"  float ndcx = i.sr.x * gViewParams.x - 1.0;\n"
@@ -174,22 +174,36 @@ namespace
 		"}\n";
 
 	// Bump PS: sample base colour (t0) + object-space normal (t1).  Diffuse = ambient +
-	// strength*N.L; add a specular lobe scaled by the material's specular (0 for matte
-	// surfaces, so rock etc. are unaffected).  The engine folds the eye half-vector into the
-	// light direction for specular materials, so N.L along that direction reads as specular.
+	// strength*N.L.  The engine folds the eye half-vector into the light direction for
+	// specular materials (Light.cpp), so N.L along that direction reads as specular.
+	//
+	// The specular FALLOFF is the engine's own: CMaterial::fSpecular -> fAngularStrength is a
+	// linear ramp between two cone cosines - full strength at cos >= the light's angular size
+	// (light2.z), zero below light2.z * the material's sharpness (light2.w), linear between -
+	// NOT a Phong lobe.  This shader used pow(N.L, 16), an invented curve with a fabricated
+	// exponent, which made every shiny material glint identically regardless of what the
+	// artist authored.  Both terms are cosines, so 1 = zero angular width: a mirror-sharp
+	// material collapses inner onto outer, and the max() below turns that into a hard step
+	// rather than a divide by zero.
+	//
+	// The rvSpecular > rvDiffuse gate the engine applies is done on the CPU, by passing a
+	// specular of 0 - so matte surfaces (rock) stay untouched here.
 	const char* k_psz_bump_ps =
 		"cbuffer CbView : register(b0) { float4 gViewParams; }\n"	// .z = bump debug tint
 		"Texture2D    gTex : register(t0);\n"
 		"Texture2D    gNrm : register(t1);\n"
 		"SamplerState gSmp : register(s0);\n"
-		"struct VSOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; float4 light1 : TEXCOORD1; float2 light2 : TEXCOORD2; };\n"
+		"struct VSOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; float4 light1 : TEXCOORD1; float4 light2 : TEXCOORD2; };\n"
 		"float4 main(VSOut i) : SV_Target {\n"
 		"  float4 base = gTex.Sample(gSmp, i.uv);\n"
 		"  clip(base.a - 0.003);\n"
 		"  float3 n = normalize(gNrm.Sample(gSmp, i.uv).rgb * 2.0 - 1.0);\n"
 		"  float ndl = max(0.0, dot(n, i.light1.xyz));\n"
 		"  float lit = saturate(i.light2.x + i.light1.w * ndl);\n"
-		"  float spec = i.light2.y * pow(saturate(ndl), 16.0);\n"
+		"  float inner = saturate(i.light2.z);\n"					// cos of the light's angular size
+		"  float outer = saturate(i.light2.w * i.light2.z);\n"		// scaled by material sharpness
+		"  float s = saturate((ndl - outer) / max(inner - outer, 1e-4));\n"
+		"  float spec = i.light2.y * s;\n"
 		"  if (gViewParams.z > 0.5) {\n"				// debug: green = bump relief, red = specular material
 		"    return float4(saturate(i.light2.y * 4.0), ndl, 0.0, 1.0);\n"
 		"  }\n"
@@ -450,7 +464,8 @@ namespace
 							{ "COLOR",    0, DXGI_FORMAT_B8G8R8A8_UNORM,     0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0 },
 							{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 20, D3D11_INPUT_PER_VERTEX_DATA, 0 },
 							{ "TEXCOORD", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 28, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-							{ "TEXCOORD", 2, DXGI_FORMAT_R32G32_FLOAT,       0, 44, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+							// (ambient, specular, light angular size, material sharpness)
+							{ "TEXCOORD", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 44, D3D11_INPUT_PER_VERTEX_DATA, 0 },
 						};
 						s_pd3dDevice->CreateInputLayout(a_belem, 5, p_bvs->GetBufferPointer(), p_bvs->GetBufferSize(), &s_pBumpLayout);
 					}
