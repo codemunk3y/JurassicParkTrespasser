@@ -982,13 +982,13 @@ inline void* pvGetVTable
 //**************************************
 {
 	Assert(pv_object);
-	Assert(sizeof(void*) == sizeof(uint32));
+	Assert(sizeof(void*) == sizeof(uintptr));
 
 	//
-	// Recast as an array of 32 bit values, get the top value and cast it as a pointer to
+	// Recast as an array of pointer-width values, get the top value and cast it as a pointer to
 	// a type void.
 	//
-	return (void*)(*((uint32*)pv_object));
+	return (void*)(*((uintptr*)pv_object));
 };
 
 //*********************************************************************************************
@@ -1010,10 +1010,10 @@ inline void PokeVTable
 {
 	Assert(pv_object);
 	Assert(pv_table);
-	Assert(sizeof(void*) == sizeof(uint32));
+	Assert(sizeof(void*) == sizeof(uintptr));
 
-	// Recast as an array of 32 bit values and poke the top value.
-	*((uint32*)pv_object) = uint32(pv_table);
+	// Recast as an array of pointer-width values and poke the top value.
+	*((uintptr*)pv_object) = (uintptr)pv_table;
 };
 
 //
