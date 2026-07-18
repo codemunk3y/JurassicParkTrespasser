@@ -894,27 +894,51 @@ bool bGroffLoadMeshHeap
 	// Read mesh heap points.
 	READ_FROM_SECTION(mh.mav3Points.atArray, mh.mav3Points.uLen*sizeof(CVector3<>));
 
-	// Read mesh heap vertices.
-	READ_FROM_SECTION(mh.mamvVertices.atArray, mh.mamvVertices.uLen*sizeof(CMesh::SVertex));
-
+	// Read mesh heap vertices.  Each on-disk record is a fixed 32-bit SVertexDisk; expand it into
+	// the native SVertex, relocating the pv3Point index to a real pointer.  (Reads go through the
+	// SmartBuffer, so these per-element reads are served from memory.)
 	for (i = 0; i < mh.mamvVertices.uLen; i++)
-		mh.mamvVertices[i].pv3Point = 
-				&mh.mav3Points[reinterpret_cast<int>(mh.mamvVertices[i].pv3Point)];
+	{
+		SVertexDisk vd;
+		READ_FROM_SECTION(&vd, sizeof(vd));
 
-	// Read mesh heap vertex pointers.
-	READ_FROM_SECTION(mh.mapmvVertices.atArray, mh.mapmvVertices.uLen*sizeof(CMesh::SVertex*));
+		CMesh::SVertex& mv = mh.mamvVertices[i];
+		mv.pv3Point      = &mh.mav3Points[vd.u4Pv3PointIndex];
+		mv.d3Normal      = vd.d3Normal;
+		mv.tcTex         = vd.tcTex;
+		mv.u4ShapeVertex = vd.u4ShapeVertex;
+		mv.u4ShapePoint  = vd.u4ShapePoint;
+	}
 
+	// Read mesh heap vertex pointers.  Each on-disk record is a uint32 index into mamvVertices.
 	for (i = 0; i < mh.mapmvVertices.uLen; i++)
-		mh.mapmvVertices[i] = 
-				&mh.mamvVertices[reinterpret_cast<int>(mh.mapmvVertices[i])];
+	{
+		uint32 u4_vertex_index;
+		READ_FROM_SECTION(&u4_vertex_index, sizeof(u4_vertex_index));
 
-	// Read mesh heap polygons.
-	READ_FROM_SECTION(mh.mampPolygons.atArray, mh.mampPolygons.uLen*sizeof(CMesh::SPolygon));
+		mh.mapmvVertices[i] = &mh.mamvVertices[u4_vertex_index];
+	}
 
+	// Read mesh heap polygons.  Each on-disk record is a fixed 32-bit SPolygonDisk.  Relocate
+	// papmvVertices.atArray to a real pointer; leave pSurface and pmx3ObjToTexture holding the
+	// raw on-disk value (a surface index / null) exactly as the previous raw read did - they are
+	// fixed up later.
 	for (i = 0; i < mh.mampPolygons.uLen; i++)
 	{
-		mh.mampPolygons[i].papmvVertices.atArray = 
-				&mh.mapmvVertices[reinterpret_cast<int>(mh.mampPolygons[i].papmvVertices.atArray)];
+		SPolygonDisk pd;
+		READ_FROM_SECTION(&pd, sizeof(pd));
+
+		CMesh::SPolygon& mp = mh.mampPolygons[i];
+		mp.papmvVertices.uLen    = pd.u4PapmvVerticesLen;
+		mp.papmvVertices.atArray = &mh.mapmvVertices[pd.u4PapmvVerticesIndex];
+		mp.plPlane               = pd.plPlane;
+		mp.pSurface              = reinterpret_cast<CMesh::SSurface*>(static_cast<uintptr>(pd.u4PSurfaceIndex));
+		mp.bOcclude              = pd.bOcclude;
+		mp.bCache                = pd.bCache;
+		mp.bCurved               = pd.bCurved;
+		mp.bHidden               = pd.bHidden;
+		mp.pmx3ObjToTexture      = reinterpret_cast<decltype(mp.pmx3ObjToTexture)>(static_cast<uintptr>(pd.u4Pmx3ObjToTexture));
+		mp.rWorldArea            = pd.rWorldArea;
 	}
 
 	// Read mesh heap wrap points.
