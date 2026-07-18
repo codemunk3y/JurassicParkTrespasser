@@ -523,7 +523,7 @@ char* CalculateHeapFragmentationText()
 		u4_total += AllocList[i].nSize;
 		
 		int32 i4_size = AllocList[i].nSize;
-		uint32 u4_adr = ((uint32)AllocList[i].pvBase) & 0xfffff000;
+		uint32 u4_adr = ((uint32)(uintptr)AllocList[i].pvBase) & 0xfffff000;
 		while (i4_size>0)
 		{
 			au4PageBase[u4_pages] = u4_adr;
