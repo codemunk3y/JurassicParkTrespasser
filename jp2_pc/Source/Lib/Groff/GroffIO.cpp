@@ -702,6 +702,75 @@ int CGroffIO::iNumJoints(const CGroffObjectInfo& goi, const CGroffObjectName& go
 
 
 //**********************************************************************************************
+// On-disk mirror structs for the optimized mesh heap (64-bit-compat groundwork).
+//
+// The optimized-GROFF mesh format (bGroffSaveMeshHeap / bGroffLoadMeshHeap below) stores each
+// mesh-heap array as a raw image of its in-memory element struct, with embedded pointers
+// relocated to array indices.  That on-disk layout is baked to the 1998 32-bit build (a pointer
+// is 4 bytes).  On a 64-bit build the native structs grow (a pointer is 8 bytes), so raw
+// sizeof()-based I/O would silently read/write a different, incompatible layout and could not
+// load the retail .grf.  These POD mirrors capture the FIXED 32-bit on-disk layout: every
+// pointer slot becomes a uint32 array index; every pointer-free member keeps its native
+// (architecture-invariant) type.  Serialization can then convert between the native structs and
+// these mirrors regardless of build width.
+//
+// The static_asserts prove, ON A 32-BIT BUILD, that each mirror is byte-identical to its native
+// struct - which is what guarantees the on-disk format is preserved.  On 64-bit the mirror stays
+// 32-bit-sized while the native struct grows; that is the whole point, so the asserts are
+// 32-bit-only.  These types are the machine-checked ground truth; the (de)serialization is
+// converted to use them in a follow-up step.  See project memory: mesh-heap-x64-rewrite-plan.
+//**********************************************************************************************
+
+#pragma pack(push, 4)
+
+// Mirror of CMesh::SVertex.  pv3Point (CVector3<>*) -> index into the mesh's mav3Points array.
+struct SVertexDisk
+{
+	uint32		u4Pv3PointIndex;	// was CVector3<>* pv3Point
+	CDir3<>		d3Normal;			// pointer-free native type, embedded as-is
+	CTexCoord	tcTex;				// pointer-free native type, embedded as-is
+	uint		u4ShapeVertex;		// the SVertex trailing union, viewed as { uint; uint }
+	uint		u4ShapePoint;
+};
+
+// Mirror of CMesh::SPolygon.
+struct SPolygonDisk
+{
+	// papmvVertices is a CPArray<SVertex*> == { uint uLen; SVertex** atArray } (uLen first).
+	uint32		u4PapmvVerticesLen;		// papmvVertices.uLen
+	uint32		u4PapmvVerticesIndex;	// papmvVertices.atArray -> index into mapmvVertices
+	CPlane		plPlane;				// pointer-free native type, embedded as-is
+	uint32		u4PSurfaceIndex;		// pSurface (ptr<SSurface>) -> index into masfSurfaces
+	bool		bOcclude: 1,			// mirror the native bitfield exactly (bit layout + pad)
+				bCache:   1,
+				bCurved:  1,
+				bHidden:  1;
+	uint32		u4Pmx3ObjToTexture;		// pmx3ObjToTexture (CMatrix3<>*), not relocated: placeholder
+	TReal		rWorldArea;				// pointer-free native type, embedded as-is
+};
+
+#pragma pack(pop)
+
+#if !defined(_WIN64)
+	// On a 32-bit build these mirrors MUST be byte-identical to the native structs, or the
+	// on-disk format would change.  If any of these fire, a mirror above is wrong.
+	static_assert(sizeof(SVertexDisk)  == sizeof(CMesh::SVertex),
+		"SVertexDisk must be byte-identical to CMesh::SVertex on 32-bit");
+	static_assert(sizeof(SPolygonDisk) == sizeof(CMesh::SPolygon),
+		"SPolygonDisk must be byte-identical to CMesh::SPolygon on 32-bit");
+	static_assert(sizeof(CMesh::SVertex*) == sizeof(uint32),
+		"a mapmvVertices element (SVertex*) is stored as a uint32 index on disk");
+
+	// Offset checks defend against a same-size field being reordered (which size alone misses).
+	static_assert(offsetof(SVertexDisk, d3Normal) == offsetof(CMesh::SVertex, d3Normal), "SVertex.d3Normal");
+	static_assert(offsetof(SVertexDisk, tcTex)    == offsetof(CMesh::SVertex, tcTex),    "SVertex.tcTex");
+	static_assert(offsetof(SPolygonDisk, plPlane)            == offsetof(CMesh::SPolygon, plPlane),           "SPolygon.plPlane");
+	static_assert(offsetof(SPolygonDisk, u4PSurfaceIndex)    == offsetof(CMesh::SPolygon, pSurface),          "SPolygon.pSurface");
+	static_assert(offsetof(SPolygonDisk, u4Pmx3ObjToTexture) == offsetof(CMesh::SPolygon, pmx3ObjToTexture),  "SPolygon.pmx3ObjToTexture");
+	static_assert(offsetof(SPolygonDisk, rWorldArea)         == offsetof(CMesh::SPolygon, rWorldArea),        "SPolygon.rWorldArea");
+#endif // !_WIN64
+
+//**********************************************************************************************
 bool bGroffSaveMeshHeap
 (
 	CFileIO&		fioFile,			// File I/O object.
