@@ -813,31 +813,49 @@ bool bGroffSaveMeshHeap
 	// Save mesh heap points.
 	WRITE_TO_SECTION(mh.mav3Points.atArray, mh.mav3Points.uLen*sizeof(CVector3<>));
 
-	// Save mesh heap vertices.
+	// Save mesh heap vertices.  Fill a fixed 32-bit SVertexDisk from each native SVertex,
+	// relocating pv3Point to an index.  Non-destructive: the native heap is left intact (the
+	// caller resets it immediately after this returns).
 	for (i = 0; i < mh.mamvVertices.uLen; i++)
-		mh.mamvVertices[i].pv3Point = 
-				reinterpret_cast<CVector3<>*>(mh.mamvVertices[i].pv3Point - mh.mav3Points.atArray);
-
-	WRITE_TO_SECTION(mh.mamvVertices.atArray, mh.mamvVertices.uLen*sizeof(CMesh::SVertex));
-
-	// Save mesh heap vertex pointers.
-	for (i = 0; i < mh.mapmvVertices.uLen; i++)
-		mh.mapmvVertices[i] = 
-				reinterpret_cast<CMesh::SVertex*>(mh.mapmvVertices[i] - mh.mamvVertices.atArray);
-
-	WRITE_TO_SECTION(mh.mapmvVertices.atArray, mh.mapmvVertices.uLen*sizeof(CMesh::SVertex*));
-
-	// Save mesh heap polygons.
-	for (i = 0; i < mh.mampPolygons.uLen; i++)
 	{
-		mh.mampPolygons[i].papmvVertices.atArray = 
-				reinterpret_cast<CMesh::SVertex**>(mh.mampPolygons[i].papmvVertices.atArray - mh.mapmvVertices.atArray);
+		CMesh::SVertex& mv = mh.mamvVertices[i];
 
-		mh.mampPolygons[i].pSurface = 
-				reinterpret_cast<CMesh::SSurface*>(mh.mampPolygons[i].pSurface - mh.masfSurfaces.atArray);
+		SVertexDisk vd;
+		vd.u4Pv3PointIndex = (uint32)(mv.pv3Point - mh.mav3Points.atArray);
+		vd.d3Normal        = mv.d3Normal;
+		vd.tcTex           = mv.tcTex;
+		vd.u4ShapeVertex   = mv.u4ShapeVertex;
+		vd.u4ShapePoint    = mv.u4ShapePoint;
+		WRITE_TO_SECTION(&vd, sizeof(vd));
 	}
 
-	WRITE_TO_SECTION(mh.mampPolygons.atArray, mh.mampPolygons.uLen*sizeof(CMesh::SPolygon));
+	// Save mesh heap vertex pointers as uint32 indices into mamvVertices.
+	for (i = 0; i < mh.mapmvVertices.uLen; i++)
+	{
+		uint32 u4_vertex_index = (uint32)(mh.mapmvVertices[i] - mh.mamvVertices.atArray);
+		WRITE_TO_SECTION(&u4_vertex_index, sizeof(u4_vertex_index));
+	}
+
+	// Save mesh heap polygons.  Fill a fixed 32-bit SPolygonDisk from each native SPolygon,
+	// relocating papmvVertices.atArray and pSurface to indices.  pmx3ObjToTexture keeps its raw
+	// value (as the previous raw write stored it); it is rebuilt at runtime after load.
+	for (i = 0; i < mh.mampPolygons.uLen; i++)
+	{
+		CMesh::SPolygon& mp = mh.mampPolygons[i];
+
+		SPolygonDisk pd;
+		pd.u4PapmvVerticesLen   = mp.papmvVertices.uLen;
+		pd.u4PapmvVerticesIndex = (uint32)(mp.papmvVertices.atArray - mh.mapmvVertices.atArray);
+		pd.plPlane              = mp.plPlane;
+		pd.u4PSurfaceIndex      = (uint32)(mp.pSurface - mh.masfSurfaces.atArray);
+		pd.bOcclude             = mp.bOcclude;
+		pd.bCache               = mp.bCache;
+		pd.bCurved              = mp.bCurved;
+		pd.bHidden              = mp.bHidden;
+		pd.u4Pmx3ObjToTexture   = (uint32)(uintptr)mp.pmx3ObjToTexture;
+		pd.rWorldArea           = mp.rWorldArea;
+		WRITE_TO_SECTION(&pd, sizeof(pd));
+	}
 
 	// Save mesh heap wrap points.
 	WRITE_TO_SECTION(mh.mav3Wrap.atArray, mh.mav3Wrap.uLen*sizeof(CVector3<>));
