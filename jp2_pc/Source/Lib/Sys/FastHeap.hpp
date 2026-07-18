@@ -597,7 +597,7 @@ public:
 		// do not commit the memory in the CDArray - it will get commited as it is allocated
 		: CDArray<char>(RoundUp(u_heap_size, uHEAP_ALIGNMENT), false)
 	{
-		Assert((int)atArray % uHEAP_ALIGNMENT == 0);
+		Assert((uintptr)atArray % uHEAP_ALIGNMENT == 0);
 
 		MEMLOG_ADD_COUNTER(emlCFastHeap, u_heap_size );
 		MEMLOG_SUB_COUNTER(emlCDArray, u_heap_size );
@@ -696,7 +696,7 @@ public:
 			p_reset_position = pvGetBase();
 
 		Assert(bWithin((char*)p_reset_position, atArray, atArray + uLen));
-		Assert((int)p_reset_position % uHEAP_ALIGNMENT == 0);
+		Assert((uintptr)p_reset_position % uHEAP_ALIGNMENT == 0);
 
 		CDArray<char>::Reset((char*)p_reset_position - atArray,false,u4_decommit);
 	}
@@ -738,7 +738,7 @@ public:
 		// Remember the current position.
 		void* pv_return_value = reinterpret_cast<void*>(atArray + uLen);
 
-		Assert((int)pv_return_value % uHEAP_ALIGNMENT == 0);
+		Assert((uintptr)pv_return_value % uHEAP_ALIGNMENT == 0);
 
 		Grow(RoundUp(u_size_type, uHEAP_ALIGNMENT));
 

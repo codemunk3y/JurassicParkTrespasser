@@ -173,14 +173,14 @@
 	void* pvDecommitMem(void* pv_start, uint32 u4_amount)
 	{
 		// round pv_start UP to the next page boundary
-		void*	pv_start_page = (void*) (((uint32)pv_start + u4SystemPageSize() - 1) & ~(u4SystemPageSize()-1));
+		void*	pv_start_page = (void*) (((uintptr)pv_start + u4SystemPageSize() - 1) & ~(uintptr)(u4SystemPageSize()-1));
 		// the number of bytes different between the start address and the page address
-		uint32	u4_diff = (uint32)pv_start_page - (uint32)pv_start;
+		uint32	u4_diff = (uint32)((uintptr)pv_start_page - (uintptr)pv_start);
 
 		uint32	u4_decommit = (u4_amount - u4_diff) & ~(u4SystemPageSize()-1);
 
 		// the decommit address should be on a system page boundary
-		Assert (((uint32)pv_start_page & (u4SystemPageSize()-1)) == 0);
+		Assert (((uintptr)pv_start_page & (u4SystemPageSize()-1)) == 0);
 
 		if (u4_decommit == 0)
 		{
