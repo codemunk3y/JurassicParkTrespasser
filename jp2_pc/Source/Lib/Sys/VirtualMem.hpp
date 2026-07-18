@@ -424,14 +424,14 @@ public:
 	{
 		// Check if the request is invalid, it must be within the pageable section of the
 		// swap file to be valid.
-		Assert( ((uint32)pv_base>=(uint32)pvBase + u4PageableOffset) && ((uint32)pv_base<((uint32)pvFileEnd)) );
+		Assert( ((uintptr)pv_base>=(uintptr)pvBase + u4PageableOffset) && ((uintptr)pv_base<((uintptr)pvFileEnd)) );
 
 		if (bThreadSuspended)
 			return;
 
 		// Calculate the start page
-		uint32	u4_page = (((uint32)pv_base)-((uint32)pvBase)) >> u4PageShift;
-		uint32	u4_count = ( ((((uint32)pv_base)+u4_len-1)-((uint32)pvBase)) >> u4PageShift ) - u4_page + 1;
+		uint32	u4_page = (uint32)((((uintptr)pv_base) - ((uintptr)pvBase)) >> u4PageShift);
+		uint32	u4_count = (uint32)(((((uintptr)pv_base) + u4_len - 1) - ((uintptr)pvBase)) >> u4PageShift) - u4_page + 1;
 
 		// check all covered pages
 		while ( u4_count > 0)
@@ -508,12 +508,12 @@ public:
 		//
 		// If the address is not in our PAGEABLE range we must assume that it exists
 		//
-		if ( ((uint32)pv_base<(uint32)pvBase+u4PageableOffset) || ((uint32)pv_base>=((uint32)pvFileEnd)) )
+		if ( ((uintptr)pv_base<(uintptr)pvBase+u4PageableOffset) || ((uintptr)pv_base>=((uintptr)pvFileEnd)) )
 			return true;
 
 		// Calculate the start page
-		uint32	u4_start_page = (((uint32)pv_base)-((uint32)pvBase)) >> u4PageShift;
-		uint32	u4_end_page = ((((uint32)pv_base) + u4_len-1)-((uint32)pvBase)) >> u4PageShift;
+		uint32	u4_start_page = (uint32)((((uintptr)pv_base) - ((uintptr)pvBase)) >> u4PageShift);
+		uint32	u4_end_page = (uint32)((((uintptr)pv_base) + u4_len - 1 - ((uintptr)pvBase)) >> u4PageShift);
 
 		// these are used in the second stage while we update the page links
 		uint32	u4_page = u4_start_page;

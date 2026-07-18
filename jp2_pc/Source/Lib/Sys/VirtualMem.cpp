@@ -274,7 +274,7 @@ void CVirtualMem::SetPagingRegion
 	pu1AllocateBase = (uint8*)(pvBase) + u4AdjustedFileLen;
 
 	// the last address backed by the swap file
-	pvFileEnd = (char*)(((uint32)pvBase) + u4_file_size);
+	pvFileEnd = (char*)(((uintptr)pvBase) + u4_file_size);
 }
 
 

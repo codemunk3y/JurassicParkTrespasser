@@ -86,6 +86,9 @@
 // Get limits of built-in types needed to define the user types.
 #include <limits.h>
 
+// For uintptr_t / intptr_t, used to define the pointer-width synonyms below.
+#include <stdint.h>
+
 
 //
 // Type definitions.
@@ -139,6 +142,13 @@ typedef unsigned char  uint8;
 	typedef          long long  int64;
 	typedef unsigned long long  uint64;
 #endif
+
+
+// Unsigned and signed integers wide enough to hold a pointer.  These are 32 bits in a Win32
+// build and 64 bits in an x64 build, so address arithmetic written in terms of them survives
+// the move to 64 bits (where a plain uint32 would silently truncate a pointer).
+typedef uintptr_t uintptr;
+typedef  intptr_t  intptr;
 
 
 typedef unsigned short ushort;
