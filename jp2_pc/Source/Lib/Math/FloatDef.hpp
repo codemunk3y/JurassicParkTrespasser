@@ -1006,11 +1006,16 @@ public:
 	// Constructor.
 	CFPUState()
 	{
+#if VER_ASM
 		uint16 u2_fpu_oldstate;
 
 		// Store the fpu state.
 		__asm fstcw [u2_fpu_oldstate]
 		u2OldFPUState = u2_fpu_oldstate;
+#else
+		// x64 uses SSE, not the x87 FPU: no control word to save.
+		u2OldFPUState = 0;
+#endif
 
 		// Indicate the fpu state has not been altered.
 		bAltered = false;
@@ -1037,6 +1042,7 @@ public:
 	//
 	//**************************************
 	{
+#if VER_ASM
 		uint16 u2_fpu_currentstate;
 		uint16 u2_fpu_newstate;
 
@@ -1048,6 +1054,9 @@ public:
 			mov   [u2_fpu_newstate], ax
 			fldcw [u2_fpu_newstate]
 		}
+#else
+		// x64/SSE: no x87 control word; single precision is native and (int) casts truncate.
+#endif
 		bAltered = true;
 	}
 
@@ -1061,6 +1070,7 @@ public:
 	//
 	//**************************************
 	{
+#if VER_ASM
 		uint16 u2_fpu_currentstate;
 		uint16 u2_fpu_newstate;
 
@@ -1073,6 +1083,9 @@ public:
 			mov   [u2_fpu_newstate], ax
 			fldcw [u2_fpu_newstate]
 		}
+#else
+		// x64/SSE: no x87 control word; single precision is native and (int) casts truncate.
+#endif
 		bAltered = true;
 	}
 
@@ -1086,6 +1099,7 @@ public:
 	//
 	//**************************************
 	{
+#if VER_ASM
 		uint16 u2_fpu_currentstate;
 		uint16 u2_fpu_newstate;
 
@@ -1097,6 +1111,9 @@ public:
 			mov   [u2_fpu_newstate], ax
 			fldcw [u2_fpu_newstate]
 		}
+#else
+		// x64/SSE: no x87 control word; single precision is native and (int) casts truncate.
+#endif
 		bAltered = true;
 	}
 
@@ -1111,6 +1128,7 @@ public:
 	//
 	//**************************************
 	{
+#if VER_ASM
 		uint16 u2_old_state;
 		uint16 u2_new_state;
 
@@ -1128,6 +1146,10 @@ public:
 			mov		[u2_new_state],ax
 			fldcw	[u2_new_state]
 		}
+#else
+		// x64/SSE: FPU exception masking is not managed here.
+		(void)u2_flags;
+#endif
 	}
 
 	//******************************************************************************************
@@ -1142,9 +1164,11 @@ public:
 	{
 		if (bAltered)
 		{
+#if VER_ASM
 			uint16 u2_fpu_oldstate = u2OldFPUState;
 
 			__asm fldcw [u2_fpu_oldstate]
+#endif
 			bAltered = false;
 		}
 	}
