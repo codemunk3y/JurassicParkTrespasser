@@ -168,8 +168,8 @@ public:
 	)
 	//*************************************
 	{
-		return ( ((uint32)pv <= ((uint32)fhGlobalMesh.uNumBytesUsed() + (uint32)fhGlobalMesh.pvGetBase())) &&
-		((uint32)pv >= (uint32)fhGlobalMesh.pvGetBase()) );
+		return ( ((uintptr)pv <= (fhGlobalMesh.uNumBytesUsed() + (uintptr)fhGlobalMesh.pvGetBase())) &&
+		((uintptr)pv >= (uintptr)fhGlobalMesh.pvGetBase()) );
 	}
 
 
