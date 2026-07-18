@@ -62,7 +62,7 @@ forceinline  ::fixed operator *(::fixed fx_a, ::fixed fx_b)
 {
 	::fixed fx_temp;
 
-	#if defined(_MSC_VER)
+	#if VER_ASM
 		__asm
 		{
 			mov		eax, fx_a.i4Fx
@@ -73,7 +73,8 @@ forceinline  ::fixed operator *(::fixed fx_a, ::fixed fx_b)
 		}
 
 	#else
-		Assert(false);
+		// (a * b) >> iFIXED_PT_POSITION, computed in 64-bit to hold the full product.
+		fx_temp.i4Fx = (int32)(((int64)fx_a.i4Fx * (int64)fx_b.i4Fx) >> iFIXED_PT_POSITION);
 
 	#endif
 
@@ -89,7 +90,7 @@ forceinline  ::fixed operator /(::fixed fx_numerator, ::fixed fx_denominator)
 
 	::fixed fx_temp;
 
-	#if defined(_MSC_VER)
+	#if VER_ASM
 		__asm
 		{
 			mov		eax, fx_numerator.i4Fx			// Multiply the numerator by the fixed point multiplier and sign extend it to 64 bits.
@@ -103,7 +104,8 @@ forceinline  ::fixed operator /(::fixed fx_numerator, ::fixed fx_denominator)
 		}
 
 	#else
-		Assert(false);
+		// (numerator << iFIXED_PT_POSITION) / denominator, computed in 64-bit.
+		fx_temp.i4Fx = (int32)(((int64)fx_numerator.i4Fx << iFIXED_PT_POSITION) / (int64)fx_denominator.i4Fx);
 
 	#endif
 
@@ -141,7 +143,7 @@ forceinline  ::fixed fxMulR
 {
 	::fixed fx_temp;
 
-	#if defined(_MSC_VER)
+	#if VER_ASM
 		__asm
 		{
 			mov		eax, fx_a.i4Fx
@@ -154,7 +156,8 @@ forceinline  ::fixed fxMulR
 		}
 
 	#else
-		Assert(false);
+		// Rounded: (a * b + half) >> iFIXED_PT_POSITION, where half = 1 << (POS-1).
+		fx_temp.i4Fx = (int32)(((int64)fx_a.i4Fx * (int64)fx_b.i4Fx + ((int64)1 << (iFIXED_PT_POSITION - 1))) >> iFIXED_PT_POSITION);
 
 	#endif
 
@@ -259,7 +262,7 @@ forceinline  ::fixed fxMulDiv
 
 	::fixed fx_temp;
 
-	#if defined(_MSC_VER)
+	#if VER_ASM
 		__asm
 		{
 			mov		eax, fx_multiplier_a.i4Fx
@@ -271,7 +274,8 @@ forceinline  ::fixed fxMulDiv
 		}
 
 	#else
-		Assert(false);
+		// (a * b) / denominator; a*b already carries 2*POS fractional bits, so no shift is needed.
+		fx_temp.i4Fx = (int32)(((int64)fx_multiplier_a.i4Fx * (int64)fx_multiplier_b.i4Fx) / (int64)fx_denominator.i4Fx);
 
 	#endif
 
