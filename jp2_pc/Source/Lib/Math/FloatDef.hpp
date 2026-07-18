@@ -840,7 +840,7 @@ inline bool bPosFloatLessThan
 {
 	int32 i4_retval;
 
-	#if defined(_MSC_VER)
+	#if VER_ASM
 		__asm
 		{
 			xor  eax, eax
@@ -886,6 +886,7 @@ inline void PosFloatSetMinMax
 	// ebx	max
 	//
 
+#if VER_ASM
 	__asm
 	{
 		push eax
@@ -910,6 +911,16 @@ FINISH_POS_FLOAT_SETMINMAX:
 		pop ebx
 		pop eax
 	}
+#else
+	{
+		// Non-asm port: clamp f_r into [f_min, f_max].  For positive floats this matches the
+		// integer-bit comparison above.
+		if (f_min >= f_r)
+			f_r = f_min;
+		else if (f_max < f_r)
+			f_r = f_max;
+	}
+#endif // VER_ASM
 
 	f = f_r;
 }
