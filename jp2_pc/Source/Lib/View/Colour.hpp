@@ -270,7 +270,7 @@ public:
 	{
 		Assert(bWithin(f_scale, 0.0f, 1.0f));
 
-	#if (TARGET_PROCESSOR != PROCESSOR_K6_3D)
+	#if (TARGET_PROCESSOR != PROCESSOR_K6_3D) && VER_ASM
 
 		float f_red   = float(u1Red);
 		float f_green = float(u1Green);
