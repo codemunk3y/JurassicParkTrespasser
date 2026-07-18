@@ -93,6 +93,7 @@ void MemCopy32
 	--pu4_dest;
 	--pu4_source;
 
+#if VER_ASM
 	__asm
 	{
 		mov edi, pu4_dest
@@ -104,6 +105,12 @@ void MemCopy32
 		dec edx
 		jnz short BEGIN_LOOP
 	}
+#else
+	// Non-asm port: copy i_num_dwords dwords, high index to low (the pointers were
+	// pre-decremented above, so this matches the asm's 1-based [ptr + edx*4] indexing).
+	for (int i = i_num_dwords; i != 0; i--)
+		pu4_dest[i] = pu4_source[i];
+#endif // VER_ASM
 }
 
 
@@ -123,6 +130,7 @@ static inline uint64* pu8MemSet64
 {
 	Assert((uint)pu8_addr % 8 == 0);
 
+#if VER_ASM
 #if defined(__MWERKS__)
 	if (u_count)
 	_asm
@@ -188,6 +196,13 @@ done:
 		mov eax, edi				// Set return pointer value.
 	}
 #endif
+#else
+	// Non-asm port: set u_count 64-bit words to u8_val.  (The asm's float-store path is a P5
+	// speed optimisation; the stored value is always u8_val, so a plain loop is equivalent.)
+	for (uint i = 0; i < u_count; i++)
+		pu8_addr[i] = u8_val;
+	return pu8_addr + u_count;
+#endif // VER_ASM
 }
 
 //
