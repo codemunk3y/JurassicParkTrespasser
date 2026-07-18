@@ -73,6 +73,13 @@
 #include "Lib/Sys/SmartBuffer.hpp"
 #include "Lib/Groff/FileIO.hpp"
 
+// A symbol entry is stored on disk as only its three leading 32-bit fields (syhHandle,
+// uNameLength, uReferenceCount); the trailing char* strName is a runtime pointer and is not
+// persisted.  Use a fixed width rather than sizeof(SSymbolEntry) - sizeof(char*) so the on-disk
+// format is identical on a 64-bit build, where the pointer's size and alignment padding would
+// otherwise change this from 12 to 16 bytes and desync reads of 32-bit-written GROFF files.
+static const uint u4SymbolEntryDiskSize = 3 * sizeof(uint32);
+
 #ifdef USE_MAX_TYPES
 #include "Tools/GroffExp/GUIInterface.hpp"
 
@@ -818,7 +825,7 @@ bool CFileIO::bWriteImage()
 		while (it != fsFile.pstSymbols.setName.end())
 		{
 			// Count the amount of information.
-			u_symbol_size += (*it)->uNameLength + sizeof(SSymbolEntry) - sizeof(char *);
+			u_symbol_size += (*it)->uNameLength + u4SymbolEntryDiskSize;
 			u_symbol_count++;
 
 			// Next symbol.
@@ -886,7 +893,7 @@ bool CFileIO::bWriteImage()
 		while (it != fsFile.pstSymbols.setName.end())
 		{
 			// Write out the symbol entry information.
-			if (!bWrite((*it), (sizeof(SSymbolEntry) - sizeof(char *))))
+			if (!bWrite((*it), (u4SymbolEntryDiskSize)))
 			{
 				// Unable to write the header for some reason.
 				return false;
@@ -1037,7 +1044,7 @@ bool CFileIO::bReadImage(PFNWORLDLOADNOTIFY pfnWorldNotify /* = NULL */,
 		SSymbolEntry* pse_symbol = new SSymbolEntry;
 
 		// Read in the symbol descriptor and length.
-		if (!bRead(pse_symbol, (int)(sizeof(SSymbolEntry) - sizeof(char *))))
+		if (!bRead(pse_symbol, (int)(u4SymbolEntryDiskSize)))
 		{
 			// Unable to read the header for some reason.
 			return false;
