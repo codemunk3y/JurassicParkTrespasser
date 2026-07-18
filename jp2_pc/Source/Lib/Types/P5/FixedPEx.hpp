@@ -190,7 +190,7 @@ forceinline  ::fixed fxDivR
 
 	::fixed fx_temp;
 
-	#if defined(_MSC_VER)
+	#if VER_ASM
 		__asm
 		{
 			//
@@ -230,7 +230,12 @@ forceinline  ::fixed fxDivR
 		}
 
 	#else
-		Assert(false);
+		// Rounded: (num << POS) / denom, round-half-away-from-zero via +/- (denom >> 1).
+		int64 i8_num  = (int64)fx_numerator.i4Fx << iFIXED_PT_POSITION;
+		int32 i4_half = fx_denominator.i4Fx >> 1;
+		if ((i8_num < 0) != (i4_half < 0))
+			i4_half = -i4_half;
+		fx_temp.i4Fx = (int32)((i8_num + (int64)i4_half) / (int64)fx_denominator.i4Fx);
 
 	#endif
 
@@ -311,7 +316,7 @@ forceinline  ::fixed fxMulDivR
 
 	::fixed fx_temp;
 
-	#if defined(_MSC_VER)
+	#if VER_ASM
 		__asm
 		{
 			mov		eax, fx_multiplier_a.i4Fx
@@ -337,7 +342,12 @@ forceinline  ::fixed fxMulDivR
 		}
 
 	#else
-		Assert(false);
+		// Rounded: (a * b) / denom, round-half-away-from-zero via +/- (denom >> 1).
+		int64 i8_prod = (int64)fx_multiplier_a.i4Fx * (int64)fx_multiplier_b.i4Fx;
+		int32 i4_half = fx_denominator.i4Fx >> 1;
+		if ((i8_prod < 0) != (i4_half < 0))
+			i4_half = -i4_half;
+		fx_temp.i4Fx = (int32)((i8_prod + (int64)i4_half) / (int64)fx_denominator.i4Fx);
 
 	#endif
 
