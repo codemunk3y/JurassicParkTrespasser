@@ -496,7 +496,9 @@ uint32 u4HashTextureData
 {	
 	u4Hash(str_inst_name);
 
-	return u4HashContinue(pmat, sizeof(CMaterial*), false);
+	// Hash a fixed 4 bytes of the material, independent of pointer size, so the resulting
+	// hash is identical on 32- and 64-bit builds.
+	return u4HashContinue(pmat, sizeof(uint32), false);
 }
 
 
