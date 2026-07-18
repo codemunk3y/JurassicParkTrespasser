@@ -1093,7 +1093,7 @@ void CTextureManager::CreatePackedImageDirectory
 
 		// fill in the allocated file chunk
 		pdfc->u4Size		= u4_size;
-		pdfc->u4VMOffset	= (uint32)(*i).prasTexture->pSurface - (uint32)gtxmTexMan.pvmeTextures->pvGetBase();
+		pdfc->u4VMOffset	= (uint32)((uintptr)(*i).prasTexture->pSurface - (uintptr)gtxmTexMan.pvmeTextures->pvGetBase());
 		pdfc->u4Width		= (*i).prasTexture->iWidth;
 		pdfc->u4Height		= (*i).prasTexture->iHeight;
 		pdfc->u4Stride		= (*i).prasTexture->iLineBytes();
@@ -1179,7 +1179,7 @@ void CTextureManager::CreatePackedImageDirectory
 
 			// fill in the allocated file chunk
 			pdfc->u4Size		= u4_size;
-			pdfc->u4VMOffset	= (uint32)(*j).prasBumpMap->pSurface - (uint32)gtxmTexMan.pvmeTextures->pvGetBase();
+			pdfc->u4VMOffset	= (uint32)((uintptr)(*j).prasBumpMap->pSurface - (uintptr)gtxmTexMan.pvmeTextures->pvGetBase());
 			pdfc->u4Width		= (*j).prasBumpMap->iWidth;
 			pdfc->u4Height		= (*j).prasBumpMap->iHeight;
 			pdfc->u4Stride		= (*j).prasBumpMap->iLineBytes();

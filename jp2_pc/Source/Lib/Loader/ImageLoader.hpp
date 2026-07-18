@@ -209,8 +209,8 @@ public:
 	)
 	//*************************************
 	{
-		return ( ((uint32)pv < ((uint32)fhImageLoad.uNumBytesUsed() + (uint32)fhImageLoad.pvGetBase())) &&
-		((uint32)pv >= (uint32)fhImageLoad.pvGetBase()) );
+		return ( ((uintptr)pv < (fhImageLoad.uNumBytesUsed() + (uintptr)fhImageLoad.pvGetBase())) &&
+		((uintptr)pv >= (uintptr)fhImageLoad.pvGetBase()) );
 	}
 
 
