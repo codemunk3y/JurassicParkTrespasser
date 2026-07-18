@@ -515,7 +515,7 @@ private:
 			return;
 
 		void* pv = pvCommitMem(atArray + uCommit, (u_offset - uCommit) * sizeof(T));
-		uCommit = (T*)pv - atArray;
+		uCommit = (uint)((T*)pv - atArray);
 	}
 
 	//*****************************************************************************************
@@ -535,7 +535,7 @@ private:
 			return;
 
 		void* pv = pvDecommitMem(atArray + u_offset, (uCommit+1 - u_offset) * sizeof(T) - 1);
-		uCommit = (T*)pv - atArray;
+		uCommit = (uint)((T*)pv - atArray);
 	}
 
 };
@@ -698,7 +698,7 @@ public:
 		Assert(bWithin((char*)p_reset_position, atArray, atArray + uLen));
 		Assert((uintptr)p_reset_position % uHEAP_ALIGNMENT == 0);
 
-		CDArray<char>::Reset((char*)p_reset_position - atArray,false,u4_decommit);
+		CDArray<char>::Reset((uint)((char*)p_reset_position - atArray),false,u4_decommit);
 	}
 
 
