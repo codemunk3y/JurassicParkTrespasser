@@ -35,6 +35,9 @@
 #ifndef HEADER_LIB_SYS_P5_MSR_HPP
 #define HEADER_LIB_SYS_P5_MSR_HPP
 
+// For __rdtsc / __readpmc, used by the non-asm (x64) path of cyReadCycles() below.
+#include <intrin.h>
+
 extern uint32 gu4MSRProfileTimerSelect;
 extern bool	gbUseRDTSC;
 
@@ -60,6 +63,7 @@ inline TCycles cyReadCycles()
 //
 //**************************************
 {
+#if VER_ASM
 #if defined(__MWERKS__)
 	TCycles cy_ret;
 #endif
@@ -102,6 +106,14 @@ DONE:
 #if defined(__MWERKS__)
 	return cy_ret;
 #endif
+#else
+	// Non-asm path: read the counter via intrinsics.
+	// __rdtsc() = RDTSC (timestamp counter); __readpmc() = RDPMC (perf counter).
+	if (gbUseRDTSC)
+		return (TCycles)__rdtsc();
+	else
+		return (TCycles)__readpmc(gu4MSRProfileTimerSelect);
+#endif // VER_ASM
 }
 
 
