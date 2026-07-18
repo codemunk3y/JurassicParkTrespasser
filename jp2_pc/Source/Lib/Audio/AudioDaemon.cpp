@@ -2023,7 +2023,7 @@ void CAudioDaemon::Process(const CMessageCollision& msg)
 	if ( /*(msg.fEnergyMax == 0.0) &&*/ (msg.fEnergySlide > 0.0) && (pcol->bSlide()) )
 	{
 		// Make a quick ID that should be unique for all sliding collisions.
-		uint32 u4_id = (uint32)msg.smatSound1 + (uint32)msg.smatSound2 + (uint32)msg.pins1 + (uint32)msg.pins2;
+		uint32 u4_id = (uint32)msg.smatSound1 + (uint32)msg.smatSound2 + (uint32)(uintptr)msg.pins1 + (uint32)(uintptr)msg.pins2;
 
 /*		dprintf("Frame: %d\n\n", CMessageStep::u4Frame);
 		dprintf("Slide Mat 1: %x\n", (uint32)msg.smatSound1);
@@ -2142,7 +2142,7 @@ void CAudioDaemon::Process(const CMessageMove& msg_move)
 				CVector3<>		v3_up		= d3ZAxis * p3_pres.r3Rot;	// up vector
 
 #if VER_TEST
-				AlwaysAssert((uint32)asatSoundObjects[u4_sample_count].psam > 32);
+				AlwaysAssert((uintptr)asatSoundObjects[u4_sample_count].psam > 32);
 #endif
 
 				asatSoundObjects[u4_sample_count].psam->SetPosition(p3_pres.v3Pos.tX,p3_pres.v3Pos.tZ,p3_pres.v3Pos.tY, false);
@@ -2914,7 +2914,7 @@ bool CAudioDaemon::bPlaySoundEffect
 		return true;
 
 	// make an Id that identifies this instance of this sample
-	uint32 u4_id = (uint32)msg.sndhndSample + (uint32)msg.pinsParent;
+	uint32 u4_id = (uint32)msg.sndhndSample + (uint32)(uintptr)msg.pinsParent;
 
 	// If this is a looped effect then chekc the collision loop flags
 	if (msg.bLooped) 
@@ -2944,7 +2944,7 @@ bool CAudioDaemon::bPlaySoundEffect
 
 	/// the cahce entry we may have found could have the wrong buffer type..
 #if VER_DEBUG
-	if (((uint32)psam>3) && CAudio::pcaAudio->bAudioActive())
+	if (((uintptr)psam>3) && CAudio::pcaAudio->bAudioActive())
 	{
 		switch (msg.u4SpatialType)
 		{
@@ -3009,7 +3009,7 @@ bool CAudioDaemon::bPlaySoundEffect
 
 		if (pser)
 		{
-			pser->u4SoundID = (uint32)psam;
+			pser->u4SoundID = (uint32)(uintptr)psam;
 		}
 
 		// if we are playing a dino effect then we need to mute any ambient sounds
