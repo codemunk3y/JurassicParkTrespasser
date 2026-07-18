@@ -147,6 +147,7 @@ inline float fInverse
 	float r;
 	float fTWO = 2.0f;
 
+#if VER_ASM
 	__asm
 	{
 		mov		ebx,dword ptr[f]
@@ -179,6 +180,24 @@ inline float fInverse
 		mov		dword ptr[r],eax
 #endif
 	}
+#else
+	{
+		// Non-asm port, bit-identical to the assembly above: table-based fast reciprocal
+		// approximation, then (under NEWTON_RAPHSON) one Newton-Raphson refinement.
+		union { float fVal; uint32 u4Bits; } cvt;
+		cvt.fVal = f;
+
+		uint32 u4_result = ((uint32)iFI_SIGN_EXPONENT_SUB - cvt.u4Bits) & (uint32)iFI_MASK_SIGN_EXPONENT;
+		uint32 u4_index  = (cvt.u4Bits & (uint32)iFI_MASK_MANTISSA) >> iSHIFT_MANTISSA;
+		u4_result += (uint32)i4InverseMantissa[u4_index];
+
+		cvt.u4Bits = u4_result;
+		r = cvt.fVal;
+#if (NEWTON_RAPHSON)
+		r = (fTWO - f * r) * r;
+#endif
+	}
+#endif // VER_ASM
 
 	return r;
 }
@@ -194,6 +213,7 @@ inline float fInverseLow
 //
 //**************************************
 {
+#if VER_ASM
 	__asm
 	{
 		mov ebx, dword ptr[f]
@@ -209,6 +229,20 @@ inline float fInverseLow
 
 		mov dword ptr[f], eax
 	}
+#else
+	{
+		// Non-asm port, bit-identical to the assembly above.
+		union { float fVal; uint32 u4Bits; } cvt;
+		cvt.fVal = f;
+
+		uint32 u4_result = ((uint32)iFI_SIGN_EXPONENT_SUB - cvt.u4Bits) & (uint32)iFI_MASK_SIGN_EXPONENT;
+		uint32 u4_index  = (cvt.u4Bits & (uint32)iFI_MASK_MANTISSA) >> iSHIFT_MANTISSA;
+		u4_result += (uint32)i4InverseMantissa[u4_index];
+
+		cvt.u4Bits = u4_result;
+		f = cvt.fVal;
+	}
+#endif // VER_ASM
 
 	return f;
 }
