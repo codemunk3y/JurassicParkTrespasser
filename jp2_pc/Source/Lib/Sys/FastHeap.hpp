@@ -554,7 +554,7 @@ template<class T> inline void* operator new(size_t u_size, CDArray<T>& ma)
 
 
 // The default heap alignment used.
-#define uHEAP_ALIGNMENT	sizeof(int)
+#define uHEAP_ALIGNMENT	((uint)sizeof(int))	// (uint)-typed so RoundUp(uint_size, uHEAP_ALIGNMENT) deduces on x64, where sizeof is size_t != uint
 
 //*********************************************************************************************
 //
