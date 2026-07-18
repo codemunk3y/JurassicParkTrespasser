@@ -77,7 +77,7 @@ public:
 
 
 	// The right way to add an element to the array is to new it into the array.
-	inline friend void* operator new(uint u_size, CSparseArray<T>& sa)
+	inline friend void* operator new(size_t u_size, CSparseArray<T>& sa)
 	{
 		Assert(u_size <= sizeof(T));
 

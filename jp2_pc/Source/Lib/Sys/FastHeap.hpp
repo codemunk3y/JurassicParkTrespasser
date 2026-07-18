@@ -541,7 +541,7 @@ private:
 };
 
 // Global new operator function based on CDArray.
-template<class T> inline void* operator new(uint u_size, CDArray<T>& ma)
+template<class T> inline void* operator new(size_t u_size, CDArray<T>& ma)
 {
 	// Make sure we're allocating an object of the proper type.
 	Assert(u_size == sizeof(T));
@@ -777,11 +777,11 @@ public:
 		return CDArray<char>::operator char*();
 	}
 
-	friend void* operator new(uint u_size_type, CFastHeap& fh_heap);
-	friend void* operator new(uint u_size_type, CFastHeap& fh_heap, uint u_alignment);
+	friend void* operator new(size_t u_size_type, CFastHeap& fh_heap);
+	friend void* operator new(size_t u_size_type, CFastHeap& fh_heap, uint u_alignment);
 
-	friend void* operator new [] (uint u_size_type,	CFastHeap& fh_heap);
-	friend void* operator new [] (uint u_size_type, CFastHeap& fh_heap, uint u_alignment);
+	friend void* operator new [] (size_t u_size_type,	CFastHeap& fh_heap);
+	friend void* operator new [] (size_t u_size_type, CFastHeap& fh_heap, uint u_alignment);
 };
 
 
@@ -793,7 +793,7 @@ public:
 //
 inline void* operator new
 (
-	uint       u_size_type,	// Size of object to be allocated in bytes.
+	size_t       u_size_type,	// Size of object to be allocated in bytes.
 	CFastHeap& fh_heap		// Pointer to the fast heap object making the memory allocation.
 )
 //
@@ -819,7 +819,7 @@ inline void* operator new
 //
 inline void* operator new
 (
-	uint		u_size_type,	// Size of object to be allocated in bytes.
+	size_t		u_size_type,	// Size of object to be allocated in bytes.
 	CFastHeap&	fh_heap,		// Pointer to the fast heap object making the memory allocation.
 	uint		u_alignment		// Byte alignment of new memory.
 )
@@ -835,7 +835,7 @@ inline void* operator new
 
 inline void* operator new []
 (
-	uint       u_size_type,	// Size of object to be allocated in bytes.
+	size_t       u_size_type,	// Size of object to be allocated in bytes.
 	CFastHeap& fh_heap		// Pointer to the fast heap object making the memory allocation.
 )
 {
@@ -845,7 +845,7 @@ inline void* operator new []
 
 inline void* operator new []
 (
-	uint		u_size_type,	// Size of object to be allocated in bytes.
+	size_t		u_size_type,	// Size of object to be allocated in bytes.
 	CFastHeap&	fh_heap,		// Pointer to the fast heap object making the memory allocation.
 	uint		u_alignment		// Byte alignment of new memory.
 )

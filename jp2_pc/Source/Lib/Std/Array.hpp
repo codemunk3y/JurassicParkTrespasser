@@ -717,7 +717,7 @@ public:
 	}
 
 	//******************************************************************************************
-	inline friend void* operator new(uint u_size, CMArrayT<T, A>& ma)
+	inline friend void* operator new(size_t u_size, CMArrayT<T, A>& ma)
 	{
 		// Allocate one element at a time only, and only of type T.
 		// Unfortunately, this is enforced only by checking u_size.
