@@ -580,36 +580,36 @@ bool CExpressionEvaluate::EvaluateExpression()
 	{
 		if (aelExpression[u4_i].u4State & EELEMENT_STATE_OPERATOR)
 		{
-			switch ((uint32)aelExpression[u4_i].ptrTrigger)
+			switch ((uintptr)aelExpression[u4_i].ptrTrigger)
 			{
 			// these use bitwise operations because C does not have a logical exclusive or, I
 			// supose it would be identical to a bitwise exclusive or.
-			case (uint32)BOOLEAN_AND:
+			case (uintptr)BOOLEAN_AND:
 			{
 				bool b_temp1 = Pop();
 				bool b_temp2 = Pop();
 				Push(b_temp1 & b_temp2);
 				break;
 			}
-			case (uint32)BOOLEAN_OR:
+			case (uintptr)BOOLEAN_OR:
 			{
 				bool b_temp1 = Pop();
 				bool b_temp2 = Pop();
 				Push(b_temp1 | b_temp2);
 				break;
 			}
-			case (uint32)BOOLEAN_XOR:
+			case (uintptr)BOOLEAN_XOR:
 			{
 				bool b_temp1 = Pop();
 				bool b_temp2 = Pop();
 				Push(b_temp1 ^ b_temp2);
 				break;
 			}
-			case (uint32)BOOLEAN_NOT:
+			case (uintptr)BOOLEAN_NOT:
 				Push(!Pop());
 				break;
 
-			case (uint32)BOOLEAN_EQUAL:
+			case (uintptr)BOOLEAN_EQUAL:
 				Push(Pop()==Pop());
 				break;
 

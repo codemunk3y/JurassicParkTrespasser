@@ -160,7 +160,7 @@ public:
 	{
 		Assert(u4ExpCount<u4EXPRESSION_STACK_SIZE);
 
-		aelExpression[u4ExpCount].ptrTrigger=(CTrigger*)u4_operator;
+		aelExpression[u4ExpCount].ptrTrigger=(CTrigger*)(uintptr)u4_operator;
 		aelExpression[u4ExpCount].u4State = EELEMENT_STATE_OPERATOR;
 		u4ExpCount++;
 	}
