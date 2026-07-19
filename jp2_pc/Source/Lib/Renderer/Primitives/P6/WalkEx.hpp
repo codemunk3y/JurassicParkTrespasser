@@ -82,6 +82,7 @@ inline void operator+=(CWalk1D& w1d_a, const CWalk1D& w1d_b)
 	//		edi		w1d_a
 	//		esi		w1d_b
 	//
+#if VER_ASM
 	__asm
 	{
 		// Load variables into the registers.
@@ -107,6 +108,13 @@ inline void operator+=(CWalk1D& w1d_a, const CWalk1D& w1d_b)
 		mov [edi]CWalk1D.bfxValue.u4Frac, ebx
 		mov [edi]CWalk1D.bfxValue.i4Int, ecx
 	}
+#else	// !VER_ASM - portable C++ (see equivalent 'C' code in the notes above)
+		w1d_a.bfxValue.i4Int += w1d_b.bfxValue.i4Int;
+		uint32 u4_old_frac = w1d_a.bfxValue.u4Frac;
+		w1d_a.bfxValue.u4Frac += w1d_b.bfxValue.u4Frac;
+		if (w1d_a.bfxValue.u4Frac < u4_old_frac)		// fractional carry
+			w1d_a.bfxValue.i4Int += w1d_a.iOffsetPerLine;
+#endif
 }
 
 
@@ -155,6 +163,7 @@ inline void operator+=
 	//		edi		w2d_a
 	//		esi		w2d_b
 	//
+#if VER_ASM
 	__asm
 	{
 		// Load variables into the registers.
@@ -179,6 +188,20 @@ inline void operator+=
 		mov [edi]CWalk2D.uVFrac, ecx
 		mov [edi + 4]CWalk2D.iUVInt, edx
 	}
+#else	// !VER_ASM - portable C++ (see equivalent 'C' code in the notes above)
+		// Add the V fractional values, capturing the carry.
+		uint u_old_vfrac = w2d_a.uVFrac;
+		w2d_a.uVFrac += w2d_b.uVFrac;
+		uint u_carry_v = (w2d_a.uVFrac < u_old_vfrac) ? 1u : 0u;
+
+		// Add the U fractional values, capturing the carry.
+		uint u_old_ufrac = w2d_a.uUFrac;
+		w2d_a.uUFrac += w2d_b.uUFrac;
+		uint u_carry_u = (w2d_a.uUFrac < u_old_ufrac) ? 1u : 0u;
+
+		// iUVInt[1] = no-carry step, iUVInt[0] = carry (V line offset) step; add the U carry.
+		w2d_a.iUVInt[1] += w2d_b.iUVInt[1 - (int)u_carry_v] + (int)u_carry_u;
+#endif
 }
 
 
