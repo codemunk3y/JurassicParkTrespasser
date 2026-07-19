@@ -53,6 +53,7 @@ CVideoWnd::~CVideoWnd()
 
 void CVideoWnd::NextDirect()
 {
+#if defined(_M_IX86)
     IDirectDrawSurface *    pSurface;
     HDC                     hdc;
     HRESULT                 hr;
@@ -89,11 +90,13 @@ void CVideoWnd::NextDirect()
     }
 
     pSurface->ReleaseDC(hdc);
+#endif
 }
 
 
 void CVideoWnd::NextNonDirect()
 {
+#if defined(_M_IX86)
     LPBYTE      pbBits;
     LPBYTE      pb;
     int         y;
@@ -177,11 +180,13 @@ void CVideoWnd::NextNonDirect()
 
     m_pBuff->Unlock();
     pSurface->Unlock(dds.lpSurface);
+#endif
 }
 
 
 void CVideoWnd::NextSmackerFrame()
 {
+#if defined(_M_IX86)
     if (m_fDirect)
     {
         NextDirect();
@@ -199,6 +204,7 @@ void CVideoWnd::NextSmackerFrame()
     {
         SmackNextFrame(m_pSmack);
     }
+#endif
 }
 
 
@@ -209,6 +215,7 @@ void CVideoWnd::Pause()
 
 void CVideoWnd::Resume()
 {
+#if defined(_M_IX86)
     if (m_iLastKey)
     {
         Trace(("Restoring to Key Frame %i", m_iLastKey));
@@ -216,11 +223,13 @@ void CVideoWnd::Resume()
         SmackGoto(m_pSmack, m_iLastKey);
         SmackSoundOnOff(m_pSmack, 1);
     }
+#endif
 }
 
 
 BOOL CVideoWnd::Play(LPCSTR pszFile)
 {
+#if defined(_M_IX86)
     HANDLE          hfile = INVALID_HANDLE_VALUE;
     char            sz[50];
     bool            bAudio;
@@ -433,6 +442,11 @@ Cleanup:
     m_pUIMgr->Detach(this);
 
     return TRUE;
+#else
+    // Smacker video is 32-bit only; skip playback on x64.
+    (void)pszFile;
+    return TRUE;
+#endif
 }
 
 
