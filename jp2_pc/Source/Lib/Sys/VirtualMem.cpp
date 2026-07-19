@@ -1156,7 +1156,7 @@ bool CVirtualMem::bLoadPageRangeImmediate
 //
 uint32 CVirtualMem::u4AsyncLoadThread
 (
-	uint32	u4_user
+	uintptr	u4_user
 )
 //*************************************
 {

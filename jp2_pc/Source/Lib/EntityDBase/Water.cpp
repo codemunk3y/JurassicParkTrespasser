@@ -2179,10 +2179,10 @@ SKIP_LOOP:
 			uint8* pu1_buffer_0	= (uint8*)_alloca(i_buffer_width + 16);
 
 			// Ensure eight byte alignment and at least one byte of left-side padding.
-			pu1_buffer_0 = ((uint8*)(uint32(pu1_buffer_0 + 8) & 0xFFFFFFF8));
+			pu1_buffer_0 = ((uint8*)((uintptr)(pu1_buffer_0 + 8) & ~(uintptr)7));
 
 			uint8* pu1_buffer_1 = (uint8*)_alloca(i_buffer_width + 16);
-			pu1_buffer_1 = ((uint8*)(uint32(pu1_buffer_1 + 8) & 0xFFFFFFF8));
+			pu1_buffer_1 = ((uint8*)((uintptr)(pu1_buffer_1 + 8) & ~(uintptr)7));
 
 			// Get the row pointer for the first row of the output raster.
 			Assert(i_y > 0);
