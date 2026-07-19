@@ -296,7 +296,7 @@ public:
 	//
 	friend void* operator new
 	(
-		uint		u_size_type,	// Size of object to be allocated in bytes.
+		size_t		u_size_type,	// Size of object to be allocated in bytes.
 		CScheduler&	sch,			// Reference to the scheduler making the memory allocation.
 		uint		u_alignment= 4	// Byte alignment of new memory.
 	);

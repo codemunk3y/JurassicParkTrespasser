@@ -903,7 +903,7 @@ namespace
 	}
 	
 	//*****************************************************************************************
-	void* CInstance::operator new(uint  u_size_type)
+	void* CInstance::operator new(size_t  u_size_type)
 	{
 #ifdef LOG_MEM
 

@@ -214,7 +214,7 @@ public:
 //
 
 //*********************************************************************************************
-void* operator new(uint u_size_type, CLRU& lru)
+void* operator new(size_t u_size_type, CLRU& lru)
 {
 	return operator new(u_size_type, *lru.pfhHeap);
 }

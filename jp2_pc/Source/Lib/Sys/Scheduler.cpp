@@ -470,7 +470,7 @@ public:
 //
 
 //*********************************************************************************************
-void* operator new(uint u_size_type, CScheduler& sch, uint u_alignment)
+void* operator new(size_t u_size_type, CScheduler& sch, uint u_alignment)
 {
 	sch.pfhHeap->Align(u_alignment);
 	return operator new(u_size_type, *sch.pfhHeap);

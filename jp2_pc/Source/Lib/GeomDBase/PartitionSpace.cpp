@@ -213,7 +213,7 @@ inline float fSmallRandom()
 	//
 	
 	//*****************************************************************************************
-	void* CPartitionSpace::operator new(uint  u_size_type)
+	void* CPartitionSpace::operator new(size_t  u_size_type)
 	{
 #ifdef LOG_MEM
 

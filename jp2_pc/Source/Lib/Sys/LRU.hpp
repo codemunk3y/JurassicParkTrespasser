@@ -179,7 +179,7 @@ public:
 	//
 	friend void* operator new
 	(
-		uint	u_size_type,	// Size of object to be allocated in bytes.
+		size_t	u_size_type,	// Size of object to be allocated in bytes.
 		CLRU&	lru				// Reference to the scheduler making the memory allocation.
 	);
 	//
