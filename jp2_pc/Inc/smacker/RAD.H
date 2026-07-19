@@ -368,6 +368,7 @@ RADDEFSTART
 
         typedef char* RADPCHAR;
 
+#if defined(_M_IX86)
         u32 __inline radsqr(u32 m) { 
           _asm { 
             mov eax,[m] 
@@ -498,6 +499,33 @@ RADDEFSTART
           }
         }
 
+#else  // !_M_IX86 - portable C++ (x64). None of these are used by Trespasser code.
+
+        u32 __inline radsqr(u32 m) { return m * m; }
+
+        u32 __inline mult64anddiv(u32 m1,u32 m2, u32 d) { return (u32)(((u64)m1 * (u64)m2) / (u64)d); }
+
+        s32 __inline radabs(s32 ab) { return (ab < 0) ? -ab : ab; }
+
+        u8 __inline radinp(u16 p) { (void)p; return 0; }               // x86 port I/O - unavailable
+
+        void __inline radoutp(u16 p,u8 v) { (void)p; (void)v; }        // x86 port I/O - unavailable
+
+        RADPCHAR __inline radstpcpy(char* p1, char* p2) { while ((*p1 = *p2) != 0) { ++p1; ++p2; } return p1; }
+
+        RADPCHAR __inline radstpcpyrs(char* p1, char* p2) { while ((*p1 = *p2) != 0) { ++p1; ++p2; } return p2; }
+
+        void __inline radmemset16(void* dest,u16 value,u32 sizeb) { u16* d = (u16*)dest; while (sizeb--) *d++ = value; }
+
+        void __inline radmemset32(void* dest,u32 value,u32 sizeb) { u32* d = (u32*)dest; while (sizeb--) *d++ = value; }
+
+        u32 __inline __stdcall RADsqrt(u32 sq) { u32 r = 0; while ((u64)(r + 1) * (r + 1) <= sq) ++r; return r; }
+
+        void __inline RADCycleTimerStartAddr(u32* addr) { *addr = 0; }
+
+        u32 __inline RADCycleTimerDeltaAddr(u32* addr) { (void)addr; return 0; }
+
+#endif
         #define RADCycleTimerStart(var) RADCycleTimerStartAddr(&var)
         #define RADCycleTimerDelta(var) RADCycleTimerDeltaAddr(&var)
 
