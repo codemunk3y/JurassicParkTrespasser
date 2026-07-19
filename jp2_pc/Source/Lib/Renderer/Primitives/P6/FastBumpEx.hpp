@@ -66,6 +66,7 @@ inline uint8 u1GetIntensityFromBumpmap
 
 	Assert(u1a_subtable);
 
+#if VER_ASM
 	__asm
 	{
 #if iBUMPMAP_RESOLUTION == 16
@@ -81,6 +82,11 @@ inline uint8 u1GetIntensityFromBumpmap
 		mov u1_intensity, al				// Move the intensity value to the return value.
 
 	};
+#else	// !VER_ASM - portable C++: index = (bumpmap angle - light theta) & mask, then table lookup.
+	uint32 u4_index = (uint32)(TBumpRes)bangp;					// raw angle-pair value (zero-extended)
+	u4_index = (u4_index - u4_light_theta) & iMASK_ANGLETABLE_LOOKUP;
+	u1_intensity = u1a_subtable[u4_index];
+#endif
 
 	// Return the intensity value.
 	return u1_intensity;
