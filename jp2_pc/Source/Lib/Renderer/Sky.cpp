@@ -3646,6 +3646,7 @@ void CSkyRender::FillSky
 	Assert (i4_width>0);
 	Assert ( (((uint32)pu2_dst) & 1) == 0 );	// address must be 16 bit aligned
 
+#if VER_ASM
 	_asm
 	{
 			mov		edi,pu2_dst
@@ -3693,6 +3694,17 @@ NEXT_LINE:
 			jnz		short LOOPY
 DONE:
 	}
+#else	// !VER_ASM - portable C++ scanline fill (x64). u4_col holds the 16-bit pixel colour.
+	uint16 u2_col  = (uint16)u4_col;
+	uint8* pu1_dst = (uint8*)pu2_dst;
+	for (uint32 u4_line = 0; u4_line < u4_lines; u4_line++)
+	{
+		uint16* pu2 = (uint16*)pu1_dst;
+		for (int32 i4_x = 0; i4_x < i4_width; i4_x++)
+			*pu2++ = u2_col;
+		pu1_dst = (uint8*)pu2 + i4_pitch_adj;		// pitch adjust is in bytes
+	}
+#endif
 }
 
 
