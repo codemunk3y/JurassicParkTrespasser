@@ -59,6 +59,7 @@
 #include "Lib/W95/WinInclude.hpp"
 #include "Config.hpp"
 #include "PerformanceCount.hpp"
+#include <intrin.h>			// __cpuid for the non-asm (x64) CPU-detect path
 
 
 //**********************************************************************************************
@@ -426,6 +427,7 @@ int iPSInit(void)
 
 		// get the version of this processor so we know what MSRs to set and the format of them
 		// we should check for an Intel device here.
+#if VER_ASM
 		_asm
 		{
 			mov			eax,1
@@ -455,6 +457,25 @@ P586:
 DONE:
 			mov			i4Processor, ebx
 		}
+#else	// !VER_ASM - portable CPU family detect (x64) via the __cpuid intrinsic
+		{
+			// Get processor family/features (CPUID leaf 1: eax=version, edx=feature flags).
+			int ai4_cpu_info[4];
+			__cpuid(ai4_cpu_info, 1);
+			int i4_family = (ai4_cpu_info[0] >> 8) & 0x0f;
+
+			if (i4_family == 4)
+				goto ERR;						// 486: MSRs do not exist - bail out
+			else if (i4_family == 5)
+				i4Processor = 0;				// P5
+			else
+			{
+				i4Processor = 1;				// normal P6
+				if ((uint32)ai4_cpu_info[3] & (1 << 23))
+					i4Processor = 2;			// PII (has MMX)
+			}
+		}
+#endif
 
 		// the counters in a Pentium are always enabled, but in a PentiumPro/Pentium II
 		// you have to set the bit in counter 0. The select functions in this file always
