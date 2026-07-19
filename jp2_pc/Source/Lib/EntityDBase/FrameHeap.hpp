@@ -156,7 +156,7 @@ public:
 //
 inline void* operator new
 (
-	uint  u_size_type,			// Amount of memory to allocate in bytes.
+	size_t  u_size_type,			// Amount of memory to allocate in bytes.
 	const CFrameHeap& frh_heap	// Frame heap to allocate from.
 )
 //

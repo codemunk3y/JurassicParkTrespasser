@@ -88,7 +88,11 @@
 //
 //**************************************
 
-#define DebuggerBreak()	_asm { int 3 }
+#if VER_ASM
+	#define DebuggerBreak()	_asm { int 3 }
+#else
+	#define DebuggerBreak()	__debugbreak()
+#endif
 
 //*********************************************************************************************
 //
