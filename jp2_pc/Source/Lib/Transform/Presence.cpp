@@ -664,7 +664,7 @@ CTransform3<> operator *(const CPresence3<>& pr3, const CTransform3<>& tf3)
 		femms										;empty MMX state and ensure fast switch
 		}
 
-#else // (TARGET_PROCESSOR == PROCESSOR_K6_3D) && VER_ASM
+#elif VER_ASM // (non-K6 CPUs) x87 FPU asm path
 
 		__asm 
 		{
@@ -917,6 +917,45 @@ CTransform3<> operator *(const CPresence3<>& pr3, const CTransform3<>& tf3)
 		// stall(3)
 		fstp	[ecx]Transform3.v3Pos.tZ
 		}
+
+#else	// !VER_ASM - portable C++ path (x64). Mirrors the generic template operator * above.
+
+		// Convert quaternion to matrix (and scale it).
+		float scale = pr3.rScale * 2.0f;
+		float t_cc  = pr3.r3Rot.tC * pr3.r3Rot.tC - 0.5f;
+
+		m_xx = (pr3.r3Rot.v3S.tX * pr3.r3Rot.v3S.tX + t_cc) * scale;
+		m_xy = (pr3.r3Rot.v3S.tX * pr3.r3Rot.v3S.tY + pr3.r3Rot.tC * pr3.r3Rot.v3S.tZ) * scale;
+		m_xz = (pr3.r3Rot.v3S.tX * pr3.r3Rot.v3S.tZ - pr3.r3Rot.tC * pr3.r3Rot.v3S.tY) * scale;
+
+		m_yx = (pr3.r3Rot.v3S.tX * pr3.r3Rot.v3S.tY - pr3.r3Rot.tC * pr3.r3Rot.v3S.tZ) * scale;
+		m_yy = (pr3.r3Rot.v3S.tY * pr3.r3Rot.v3S.tY + t_cc) * scale;
+		m_yz = (pr3.r3Rot.v3S.tY * pr3.r3Rot.v3S.tZ + pr3.r3Rot.tC * pr3.r3Rot.v3S.tX) * scale;
+
+		m_zx = (pr3.r3Rot.v3S.tX * pr3.r3Rot.v3S.tZ + pr3.r3Rot.tC * pr3.r3Rot.v3S.tY) * scale;
+		m_zy = (pr3.r3Rot.v3S.tY * pr3.r3Rot.v3S.tZ - pr3.r3Rot.tC * pr3.r3Rot.v3S.tX) * scale;
+		m_zz = (pr3.r3Rot.v3S.tZ * pr3.r3Rot.v3S.tZ + t_cc) * scale;
+
+		// Multiply by view matrix.
+		that->mx3Mat.v3X.tX = m_xx * tf3.mx3Mat.v3X.tX + m_xy * tf3.mx3Mat.v3Y.tX + m_xz * tf3.mx3Mat.v3Z.tX;
+		that->mx3Mat.v3X.tY = m_xx * tf3.mx3Mat.v3X.tY + m_xy * tf3.mx3Mat.v3Y.tY + m_xz * tf3.mx3Mat.v3Z.tY;
+		that->mx3Mat.v3X.tZ = m_xx * tf3.mx3Mat.v3X.tZ + m_xy * tf3.mx3Mat.v3Y.tZ + m_xz * tf3.mx3Mat.v3Z.tZ;
+
+		that->mx3Mat.v3Y.tX = m_yx * tf3.mx3Mat.v3X.tX + m_yy * tf3.mx3Mat.v3Y.tX + m_yz * tf3.mx3Mat.v3Z.tX;
+		that->mx3Mat.v3Y.tY = m_yx * tf3.mx3Mat.v3X.tY + m_yy * tf3.mx3Mat.v3Y.tY + m_yz * tf3.mx3Mat.v3Z.tY;
+		that->mx3Mat.v3Y.tZ = m_yx * tf3.mx3Mat.v3X.tZ + m_yy * tf3.mx3Mat.v3Y.tZ + m_yz * tf3.mx3Mat.v3Z.tZ;
+
+		that->mx3Mat.v3Z.tX = m_zx * tf3.mx3Mat.v3X.tX + m_zy * tf3.mx3Mat.v3Y.tX + m_zz * tf3.mx3Mat.v3Z.tX;
+		that->mx3Mat.v3Z.tY = m_zx * tf3.mx3Mat.v3X.tY + m_zy * tf3.mx3Mat.v3Y.tY + m_zz * tf3.mx3Mat.v3Z.tY;
+		that->mx3Mat.v3Z.tZ = m_zx * tf3.mx3Mat.v3X.tZ + m_zy * tf3.mx3Mat.v3Y.tZ + m_zz * tf3.mx3Mat.v3Z.tZ;
+
+		// Transform position by view transform.
+		that->v3Pos.tX = pr3.v3Pos.tX * tf3.mx3Mat.v3X.tX + pr3.v3Pos.tY * tf3.mx3Mat.v3Y.tX +
+									pr3.v3Pos.tZ * tf3.mx3Mat.v3Z.tX + tf3.v3Pos.tX;
+		that->v3Pos.tY = pr3.v3Pos.tX * tf3.mx3Mat.v3X.tY + pr3.v3Pos.tY * tf3.mx3Mat.v3Y.tY +
+									pr3.v3Pos.tZ * tf3.mx3Mat.v3Z.tY + tf3.v3Pos.tY;
+		that->v3Pos.tZ = pr3.v3Pos.tX * tf3.mx3Mat.v3X.tZ + pr3.v3Pos.tY * tf3.mx3Mat.v3Y.tZ +
+									pr3.v3Pos.tZ * tf3.mx3Mat.v3Z.tZ + tf3.v3Pos.tZ;
 
 #endif // else(TARGET_PROCESSOR == PROCESSOR_K6_3D) && VER_ASM
 
