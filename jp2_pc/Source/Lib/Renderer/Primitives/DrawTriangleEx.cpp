@@ -6869,6 +6869,7 @@ inline bool GenericInitTriangleDataLinearGour
 	float f_di_invdx;
 	float f_temp;
 
+#if VER_ASM
 	__asm
 	{
 		mov		edi,prv_c						// prv_c = edi
@@ -7155,6 +7156,68 @@ NO_INTENSITY_CLAMP:
 	
 SKIP_INTENSITY_UPDATE:
 	}
+#else	// !VER_ASM - portable C++ linear gouraud triangle gradient setup (x64)
+	// Triangle edge deltas.
+	float f_yab = prv_b->v3Screen.tY - prv_a->v3Screen.tY;
+	float f_yac = prv_c->v3Screen.tY - prv_a->v3Screen.tY;
+	float f_xab = prv_b->v3Screen.tX - prv_a->v3Screen.tX;
+	float f_xac = prv_c->v3Screen.tX - prv_a->v3Screen.tX;
+
+	f_dx = f_xab * f_yac - f_xac * f_yab;
+	if (f_dx >= fMAX_NEG_AREA)
+		return false;
+
+	f_invdx     = fInverse(f_dx);
+	f_yab_invdx = f_yab * f_invdx;
+	f_yac_invdx = f_yac * f_invdx;
+
+	float f_uab = prv_b->tcTex.tX - prv_a->tcTex.tX;
+	float f_uac = prv_c->tcTex.tX - prv_a->tcTex.tX;
+	float f_vab = prv_b->tcTex.tY - prv_a->tcTex.tY;
+	float f_vac = prv_c->tcTex.tY - prv_a->tcTex.tY;
+	float f_iab = prv_b->cvIntensity - prv_a->cvIntensity;
+	float f_iac = prv_c->cvIntensity - prv_a->cvIntensity;
+
+	// Linear (non-perspective) u/v steps + intensity step.
+	f_du       = f_uab * f_yac_invdx - f_uac * f_yab_invdx;
+	f_dv       = f_vab * f_yac_invdx - f_vac * f_yab_invdx;
+	f_di_invdx = f_iab * f_yac_invdx - f_iac * f_yab_invdx;
+
+	bool b_do_intensity = true;
+	if (b_update)
+	{
+		// SetMinAbs matches the asm here (sign change -> 0, else keep smaller magnitude).
+		SetMinAbs(fDU, f_du);
+		SetMinAbs(fDV, f_dv);
+
+		if (CIntFloat(f_di_invdx).bSign() != CIntFloat(fDeltaXIntensity).bSign())
+		{
+			fDeltaXIntensity       = 0.0f;
+			fxDeltaXIntensity.i4Fx = 0;
+			b_do_intensity = false;
+		}
+		else if (fabs(f_di_invdx) >= fabs(fDeltaXIntensity))
+		{
+			b_do_intensity = false;
+		}
+	}
+	else
+	{
+		fDU = f_du;
+		fDV = f_dv;
+	}
+
+	if (b_do_intensity)
+	{
+		// Clamp magnitude to 16 (preserving sign); store float + 16.16 fixed (magic-const, matches asm).
+		float f_i = f_di_invdx;
+		if (f_i >  fSIXTEEN) f_i =  fSIXTEEN;
+		if (f_i < -fSIXTEEN) f_i = -fSIXTEEN;
+		fDeltaXIntensity = f_i;
+		double d_i = (double)f_i + dFloatToFixed16;
+		fxDeltaXIntensity.i4Fx = ((const int32*)&d_i)[0];
+	}
+#endif
 
 	return true;
 
