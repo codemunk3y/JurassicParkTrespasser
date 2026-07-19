@@ -5707,6 +5707,7 @@ template <class aCEdge> void GenericInitializeEdge
 	int i4temp;
 	float f_dy;
 
+#if VER_ASM
 	__asm
 	{
 		mov		esi,prv_from								// From vertex.  
@@ -5794,6 +5795,32 @@ DONE_WITH_DIVIDE:
 		mov		[edx]aCEdge.lineStart.fxX,ecx				
 RETURN_FROM_FUNC:
 	}
+#else	// !VER_ASM - portable C++ edge setup (x64)
+	edge.prvFrom = prv_from;
+	edge.prvTo   = prv_to;
+
+	i4temp = prv_from->iYScr + 1;
+	f_dy   = prv_to->v3Screen.tY - prv_from->v3Screen.tY;
+	edge.fStartYDiff = (float)i4temp - prv_from->v3Screen.tY;
+
+	// 1 / f_dy with a floor of 0.01 to avoid huge slopes on near-horizontal edges.
+	if (f_dy < fPOINT_ZERO_ONE)
+		edge.fInvDY = fRECIP_POINT_ZERO_ONE;
+	else
+		edge.fInvDY = fInverse(f_dy);
+
+	// Single-scanline edge: nothing more to set up.
+	if (prv_from->iYScr == prv_to->iYScr)
+		return;
+
+	float f_increment_x = edge.fInvDY * (prv_to->v3Screen.tX - prv_from->v3Screen.tX);
+
+	// Convert to 16.16 fixed via the dFloatToFixed16 magic-constant trick (low dword of the double).
+	double d_inc   = (double)f_increment_x + dFloatToFixed16;
+	double d_start = (double)(f_increment_x * edge.fStartYDiff + prv_from->v3Screen.tX) + dFloatToFixed16;
+	edge.lineIncrement.fxX.i4Fx = ((const int32*)&d_inc)[0];
+	edge.lineStart.fxX.i4Fx     = ((const int32*)&d_start)[0];
+#endif
 }
 
 
