@@ -1225,7 +1225,7 @@ Error:
 }
 
 
-int CUIListbox::AddItem(LPCSTR pszText, DWORD dwParam, int iIndex, WORD wFlags)
+int CUIListbox::AddItem(LPCSTR pszText, DWORD_PTR dwParam, int iIndex, WORD wFlags)
 {
     CUILISTBOXINFO  info;
 
@@ -1348,7 +1348,7 @@ int CUIListbox::FindItem(LPCSTR pszText)
 }
 
 
-int CUIListbox::GetItem(LPSTR psz, int icText, DWORD & dwParam, WORD & wFlags, int iIndex)
+int CUIListbox::GetItem(LPSTR psz, int icText, DWORD_PTR & dwParam, WORD & wFlags, int iIndex)
 {
     CUILISTBOXINFO *    pinfo;
     int                 icCopy;
@@ -1383,7 +1383,7 @@ int CUIListbox::GetItem(LPSTR psz, int icText, DWORD & dwParam, WORD & wFlags, i
 }
 
 
-int CUIListbox::SetItem(LPSTR psz, DWORD dwParam, WORD wFlags, int iIndex)
+int CUIListbox::SetItem(LPSTR psz, DWORD_PTR dwParam, WORD wFlags, int iIndex)
 {
     std::vector<CUILISTBOXINFO>::iterator    pinfo;
 

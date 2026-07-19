@@ -836,7 +836,7 @@ void CDirectLoadWnd::UIButtonUp(CUIButton * pbutton)
         case 1001:
             {
                 char            szName[50];
-                DWORD           dwParam;
+                DWORD_PTR           dwParam;
                 WORD            wFlags;
                 CUIListbox *    pctrl;
                 int             iIndex;
@@ -876,7 +876,7 @@ void CDirectLoadWnd::UIListboxClick(CUICtrl * pctrl, int iIndex)
 void CDirectLoadWnd::UIListboxDblClk(CUICtrl * pctrl, int iIndex)
 {
     char    szName[50];
-    DWORD   dwParam;
+    DWORD_PTR   dwParam;
     WORD    wFlags;
 
     ((CUIListbox *)pctrl)->GetItem(szName, 

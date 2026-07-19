@@ -189,7 +189,7 @@ protected:
 typedef struct tagCUILISTBOXINFO
 {
     LPSTR       psz;
-    DWORD       dwParam;
+    DWORD_PTR   dwParam;
     WORD        wFlags;
 } CUILISTBOXINFO;
 
@@ -218,14 +218,14 @@ public:
 
             int     GetNumItems() { return m_vInfo.size(); }
 
-            int     AddItem(LPCSTR pszText, DWORD dwParam, int iIndex, WORD wFlags);
+            int     AddItem(LPCSTR pszText, DWORD_PTR dwParam, int iIndex, WORD wFlags);
             BOOL    RemoveItem(int iIndex);
             BOOL    RemoveAllItems();
 
             int     FindItem(LPCSTR pszText);
 
-            int     GetItem(LPSTR psz, int icText, DWORD & dwParam, WORD & wFlags, int iIndex);
-            int     SetItem(LPSTR psz, DWORD dwParam, WORD wFlags, int iIndex);
+            int     GetItem(LPSTR psz, int icText, DWORD_PTR & dwParam, WORD & wFlags, int iIndex);
+            int     SetItem(LPSTR psz, DWORD_PTR dwParam, WORD wFlags, int iIndex);
 
             int     GetCurrSel() { return m_iCurrSel; }
             int     SetCurrSel(int iIndex);

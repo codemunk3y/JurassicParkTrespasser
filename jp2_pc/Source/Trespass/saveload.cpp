@@ -190,7 +190,7 @@ void FindSavedGames(CUIListbox * plist, std::vector<SAVEGAMEINFO> * psgi)
 
     for (ppinfo = psgi->begin(); ppinfo != psgi->end(); ppinfo++)
     {
-        plist->AddItem(ppinfo->szName, (DWORD)&(*ppinfo), -1, 0);
+        plist->AddItem(ppinfo->szName, (DWORD_PTR)&(*ppinfo), -1, 0);
     }
 }
 
@@ -260,7 +260,7 @@ void CLoadGameWnd::UIButtonUp(CUIButton * pbutton)
                 char            szExt[100];
                 char            szMsg[250];
                 char            szFName[50];
-                DWORD           dwParam;
+                DWORD_PTR           dwParam;
                 WORD            wFlags;
                 int             i;
                 SAVEGAMEINFO    sgi;
@@ -309,7 +309,7 @@ void CLoadGameWnd::UIListboxClick(CUICtrl * pctrl, int iIndex)
 {
     CRasterDC *     pras;
     char            sz[255];
-    DWORD           dwParam;
+    DWORD_PTR           dwParam;
     WORD            wFlags;
     CUIStatic *     pstatic;
     SAVEGAMEINFO*   ppinfo;
@@ -450,7 +450,7 @@ void CSaveGameWnd::UIButtonUp(CUIButton * pbutton)
                 char            szExt[100];
                 char            szMsg[250];
                 char            szFName[50];
-                DWORD           dwParam;
+                DWORD_PTR           dwParam;
                 WORD            wFlags;
                 int             i;
                 SAVEGAMEINFO    sgi;
@@ -538,7 +538,7 @@ void CSaveGameWnd:: UIListboxClick(CUICtrl * pctrl, int iIndex)
 {
     CRasterDC *     pras;
     char            sz[255];
-    DWORD           dwParam;
+    DWORD_PTR           dwParam;
     WORD            wFlags;
     CUIStatic *     pstatic;
     SAVEGAMEINFO*   ppinfo;
@@ -572,7 +572,7 @@ void CSaveGameWnd::ActualSave()
     char            szMsg[255];
     char            szFName[_MAX_PATH];
     LPSTR           psz;
-    DWORD           dwParam;
+    DWORD_PTR           dwParam;
     WORD            wFlags;
     BOOL            bValidName = FALSE;
     int             iLen;
@@ -665,7 +665,7 @@ void CSaveGameWnd::UpdateButtons(BOOL bIgnoreText)
     LPSTR           psz;
     int             i;
     char            sz[40];
-    DWORD           dwParam;
+    DWORD_PTR           dwParam;
     WORD            wFlags;
 
     if (!bIgnoreText)
