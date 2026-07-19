@@ -1405,18 +1405,25 @@ POINT GetCurrentClientSize()
 
 void MapScreenPointToRender(POINT& pt)
 {
-    if (!bGetFullScreen())
+    // The render buffer is presented into the main window's client area (the
+    // renderer is currently always windowed - see forceWindowMode in
+    // RasterVid.cpp).  Map the global cursor position (GetCursorPos, screen
+    // coords) into render-buffer space so the software UI hit-tests line up
+    // with what is drawn, whatever the window's position or size.  Previously
+    // this only ran in fullscreen, so in windowed mode the menu hit-tested
+    // against raw screen coordinates and every button appeared dead.
+    if (!g_hwnd)
         return;
 
-    const int scr_w = GetSystemMetrics(SM_CXSCREEN);
-    const int scr_h = GetSystemMetrics(SM_CYSCREEN);
+    // Screen -> window client coordinates.
+    ScreenToClient(g_hwnd, &pt);
 
-    // Use the ACTUAL render buffer dimensions (what CRasterWin::Flip blits from
-    // and pillar/letter-boxes), not the configured bGetDimensions value.  The
-    // in-game buffer can be a different size than the config (e.g. buffer
-    // 640x480 while the config requests 320x240); mapping with the config size
-    // would scale the cursor into the wrong range and cap it at the middle of
-    // the screen.
+    RECT rc_client;
+    GetClientRect(g_hwnd, &rc_client);
+    const int cli_w = rc_client.right  - rc_client.left;
+    const int cli_h = rc_client.bottom - rc_client.top;
+
+    // Actual render buffer dimensions (what Flip blits from), not the config.
     int ren_w = DEFAULT_SIZE_WIDTH;
     int ren_h = DEFAULT_SIZE_HEIGHT;
     if (prasMainScreen && prasMainScreen->iWidthFront > 0 && prasMainScreen->iHeightFront > 0)
@@ -1429,19 +1436,9 @@ void MapScreenPointToRender(POINT& pt)
         bGetDimensions(ren_w, ren_h);
     }
 
-    // Same pillar/letter-box fit used by CRasterWin::Flip.
-    int dst_w = scr_w;
-    int dst_h = scr_w * ren_h / ren_w;
-    if (dst_h > scr_h)
-    {
-        dst_h = scr_h;
-        dst_w = scr_h * ren_w / ren_h;
-    }
-    const int dst_x = (scr_w - dst_w) / 2;
-    const int dst_y = (scr_h - dst_h) / 2;
-
-    int rx = (dst_w > 0) ? (pt.x - dst_x) * ren_w / dst_w : 0;
-    int ry = (dst_h > 0) ? (pt.y - dst_y) * ren_h / dst_h : 0;
+    // Client -> render space (the buffer is blitted to fill the client area).
+    int rx = (cli_w > 0) ? pt.x * ren_w / cli_w : pt.x;
+    int ry = (cli_h > 0) ? pt.y * ren_h / cli_h : pt.y;
 
     if (rx < 0)            rx = 0;
     else if (rx > ren_w-1) rx = ren_w - 1;
