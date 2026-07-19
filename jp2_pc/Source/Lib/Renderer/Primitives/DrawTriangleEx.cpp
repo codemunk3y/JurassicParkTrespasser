@@ -4211,6 +4211,7 @@ inline void GenericInitializePolygonDataFlat(CRenderPolygon *rpoly)
 		iDefaultFog
 	);
 
+#if VER_ASM
 	__asm
 	{
 		mov		ebx,bClampUV
@@ -4360,6 +4361,30 @@ VTXLOOP2:
 
 VTXDONE:
 	}
+#else	// !VER_ASM - portable C++ (x64)
+	fTexWidth  = pras_texture->fWidth;
+	fTexHeight = pras_texture->fHeight;
+
+	int i_count = rpoly->paprvPolyVertices.uLen;
+	for (int i_v = 0; i_v < i_count; i_v++)
+	{
+		SRenderVertex* prv = rpoly->paprvPolyVertices[i_v];
+		SRenderVertex& rv  = arvRasterVertices[i_v];
+
+		float f_tx = prv->tcTex.tX * fTexWidth;
+		float f_ty = prv->tcTex.tY * fTexHeight;
+		if (bClampUV)
+		{
+			f_tx += fTexEdgeTolerance;
+			f_ty += fTexEdgeTolerance;
+		}
+		rv.tcTex.tX = f_tx * prv->v3Screen.tZ;
+		rv.tcTex.tY = f_ty * prv->v3Screen.tZ;
+		rv.v3Screen = prv->v3Screen;
+		double d_temp_a = (double)prv->v3Screen.tY + dFloatToFixed32;
+		rv.iYScr = ((const int32*)&d_temp_a)[1] & 0x0007ffff;
+	}
+#endif
 }
 
 
@@ -4412,6 +4437,7 @@ inline void GenericInitializePolygonDataGour(CRenderPolygon *rpoly)
 		iDefaultFog
 	);
 
+#if VER_ASM
 	__asm
 	{
 		mov		ebx,bClampUV
@@ -4567,6 +4593,31 @@ VTXLOOP2:
 
 VTXDONE:
 	}
+#else	// !VER_ASM - portable C++ (x64)
+	fTexWidth  = pras_texture->fWidth;
+	fTexHeight = pras_texture->fHeight;
+
+	int i_count = rpoly->paprvPolyVertices.uLen;
+	for (int i_v = 0; i_v < i_count; i_v++)
+	{
+		SRenderVertex* prv = rpoly->paprvPolyVertices[i_v];
+		SRenderVertex& rv  = arvRasterVertices[i_v];
+
+		float f_tx = prv->tcTex.tX * fTexWidth;
+		float f_ty = prv->tcTex.tY * fTexHeight;
+		if (bClampUV)
+		{
+			f_tx += fTexEdgeTolerance;
+			f_ty += fTexEdgeTolerance;
+		}
+		rv.tcTex.tX = f_tx * prv->v3Screen.tZ;
+		rv.tcTex.tY = f_ty * prv->v3Screen.tZ;
+		rv.v3Screen = prv->v3Screen;
+		rv.cvIntensity = prv->cvIntensity;
+		double d_temp_a = (double)prv->v3Screen.tY + dFloatToFixed32;
+		rv.iYScr = ((const int32*)&d_temp_a)[1] & 0x0007ffff;
+	}
+#endif
 }
 
 
@@ -4615,6 +4666,7 @@ inline void GenericInitializePolygonDataBump(CRenderPolygon *rpoly)
 		iDefaultFog
 	);
 
+#if VER_ASM
 	__asm
 	{
 		mov		ebx,bClampUV
@@ -4764,6 +4816,30 @@ VTXLOOP2:
 
 VTXDONE:
 	}
+#else	// !VER_ASM - portable C++ (x64)
+	fTexWidth  = pras_texture->fWidth;
+	fTexHeight = pras_texture->fHeight;
+
+	int i_count = rpoly->paprvPolyVertices.uLen;
+	for (int i_v = 0; i_v < i_count; i_v++)
+	{
+		SRenderVertex* prv = rpoly->paprvPolyVertices[i_v];
+		SRenderVertex& rv  = arvRasterVertices[i_v];
+
+		float f_tx = prv->tcTex.tX * fTexWidth;
+		float f_ty = prv->tcTex.tY * fTexHeight;
+		if (bClampUV)
+		{
+			f_tx += fTexEdgeTolerance;
+			f_ty += fTexEdgeTolerance;
+		}
+		rv.tcTex.tX = f_tx * prv->v3Screen.tZ;
+		rv.tcTex.tY = f_ty * prv->v3Screen.tZ;
+		rv.v3Screen = prv->v3Screen;
+		double d_temp_a = (double)prv->v3Screen.tY + dFloatToFixed32;
+		rv.iYScr = ((const int32*)&d_temp_a)[1] & 0x0007ffff;
+	}
+#endif
 }
 
 
@@ -4799,6 +4875,7 @@ inline void GenericInitializePolygonDataLinear(CRenderPolygon *rpoly)
 	u4TextureTileMask = (pras_texture->u4HeightTileMask << 9) | pras_texture->u4WidthTileMask;
 	u4TextureTileMaskStepU = pras_texture->u4WidthTileMask;
 
+#if VER_ASM
 	__asm
 	{
 		mov		ebx,bClampUV
@@ -4936,6 +5013,30 @@ VTXLOOP2:
 
 VTXDONE:
 	}
+#else	// !VER_ASM - portable C++ (x64)
+	fTexWidth  = pras_texture->fWidth;
+	fTexHeight = pras_texture->fHeight;
+
+	int i_count = rpoly->paprvPolyVertices.uLen;
+	for (int i_v = 0; i_v < i_count; i_v++)
+	{
+		SRenderVertex* prv = rpoly->paprvPolyVertices[i_v];
+		SRenderVertex& rv  = arvRasterVertices[i_v];
+
+		float f_tx = prv->tcTex.tX * fTexWidth;
+		float f_ty = prv->tcTex.tY * fTexHeight;
+		if (bClampUV)
+		{
+			f_tx += fTexEdgeTolerance;
+			f_ty += fTexEdgeTolerance;
+		}
+		rv.tcTex.tX = f_tx;
+		rv.tcTex.tY = f_ty;
+		rv.v3Screen = prv->v3Screen;
+		double d_temp_a = (double)prv->v3Screen.tY + dFloatToFixed32;
+		rv.iYScr = ((const int32*)&d_temp_a)[1] & 0x0007ffff;
+	}
+#endif
 }
 
 
@@ -4993,6 +5094,7 @@ inline void GenericInitializePolygonDataLinearFlat(CRenderPolygon *rpoly)
 		iDefaultFog
 	);
 
+#if VER_ASM
 	__asm
 	{
 		mov		ebx,bClampUV
@@ -5130,6 +5232,30 @@ VTXLOOP2:
 
 VTXDONE:
 	}
+#else	// !VER_ASM - portable C++ (x64)
+	fTexWidth  = pras_texture->fWidth;
+	fTexHeight = pras_texture->fHeight;
+
+	int i_count = rpoly->paprvPolyVertices.uLen;
+	for (int i_v = 0; i_v < i_count; i_v++)
+	{
+		SRenderVertex* prv = rpoly->paprvPolyVertices[i_v];
+		SRenderVertex& rv  = arvRasterVertices[i_v];
+
+		float f_tx = prv->tcTex.tX * fTexWidth;
+		float f_ty = prv->tcTex.tY * fTexHeight;
+		if (bClampUV)
+		{
+			f_tx += fTexEdgeTolerance;
+			f_ty += fTexEdgeTolerance;
+		}
+		rv.tcTex.tX = f_tx;
+		rv.tcTex.tY = f_ty;
+		rv.v3Screen = prv->v3Screen;
+		double d_temp_a = (double)prv->v3Screen.tY + dFloatToFixed32;
+		rv.iYScr = ((const int32*)&d_temp_a)[1] & 0x0007ffff;
+	}
+#endif
 }
 
 
@@ -5182,6 +5308,7 @@ inline void GenericInitializePolygonDataLinearGour(CRenderPolygon *rpoly)
 		iDefaultFog
 	);
 
+#if VER_ASM
 	__asm
 	{
 		mov		ebx,bClampUV
@@ -5325,6 +5452,31 @@ VTXLOOP2:
 
 VTXDONE:
 	}
+#else	// !VER_ASM - portable C++ (x64)
+	fTexWidth  = pras_texture->fWidth;
+	fTexHeight = pras_texture->fHeight;
+
+	int i_count = rpoly->paprvPolyVertices.uLen;
+	for (int i_v = 0; i_v < i_count; i_v++)
+	{
+		SRenderVertex* prv = rpoly->paprvPolyVertices[i_v];
+		SRenderVertex& rv  = arvRasterVertices[i_v];
+
+		float f_tx = prv->tcTex.tX * fTexWidth;
+		float f_ty = prv->tcTex.tY * fTexHeight;
+		if (bClampUV)
+		{
+			f_tx += fTexEdgeTolerance;
+			f_ty += fTexEdgeTolerance;
+		}
+		rv.tcTex.tX = f_tx;
+		rv.tcTex.tY = f_ty;
+		rv.v3Screen = prv->v3Screen;
+		rv.cvIntensity = prv->cvIntensity;
+		double d_temp_a = (double)prv->v3Screen.tY + dFloatToFixed32;
+		rv.iYScr = ((const int32*)&d_temp_a)[1] & 0x0007ffff;
+	}
+#endif
 }
 
 
@@ -5373,6 +5525,7 @@ inline void GenericInitializePolygonDataLinearBump(CRenderPolygon *rpoly)
 		iDefaultFog
 	);
 
+#if VER_ASM
 	__asm
 	{
 		mov		ebx,bClampUV
@@ -5510,6 +5663,30 @@ VTXLOOP2:
 
 VTXDONE:
 	}
+#else	// !VER_ASM - portable C++ (x64)
+	fTexWidth  = pras_texture->fWidth;
+	fTexHeight = pras_texture->fHeight;
+
+	int i_count = rpoly->paprvPolyVertices.uLen;
+	for (int i_v = 0; i_v < i_count; i_v++)
+	{
+		SRenderVertex* prv = rpoly->paprvPolyVertices[i_v];
+		SRenderVertex& rv  = arvRasterVertices[i_v];
+
+		float f_tx = prv->tcTex.tX * fTexWidth;
+		float f_ty = prv->tcTex.tY * fTexHeight;
+		if (bClampUV)
+		{
+			f_tx += fTexEdgeTolerance;
+			f_ty += fTexEdgeTolerance;
+		}
+		rv.tcTex.tX = f_tx;
+		rv.tcTex.tY = f_ty;
+		rv.v3Screen = prv->v3Screen;
+		double d_temp_a = (double)prv->v3Screen.tY + dFloatToFixed32;
+		rv.iYScr = ((const int32*)&d_temp_a)[1] & 0x0007ffff;
+	}
+#endif
 }
 
 
