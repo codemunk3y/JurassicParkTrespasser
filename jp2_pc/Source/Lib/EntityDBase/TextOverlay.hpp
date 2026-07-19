@@ -110,30 +110,30 @@ public:
 
 	
 	//*****************************************************************************************
-	uint32 u4DisplayFormattedString
+	uintptr u4DisplayFormattedString
 	(
 		char*		str_text,			// C style text string
 		TSec		s_time,				// display time
 		uint32		u4_flags,			// formatting flags
 		CColour		clr,				// colour of the text
-		uint32		u4_prev = 0,
+		uintptr		u4_prev = 0,
 		ETextType	ett = ettUNKNOWN
 	);
 
 	//*****************************************************************************************
-	uint32 u4DisplayPositionedString
+	uintptr u4DisplayPositionedString
 	(
 		char*		str_text,			// C style text string
 		TSec		s_time,				// display time
 		uint32		u4_xpos,			// screen x position
 		uint32		u4_ypos,			// screen y position
 		CColour		clr,				// colour
-		uint32		u4_prev = 0,
+		uintptr		u4_prev = 0,
 		ETextType	ett = ettUNKNOWN
 	);
 
 	//*****************************************************************************************
-	uint32 u4FindSequenceEnd
+	uintptr u4FindSequenceEnd
 	(
 		ETextType	ett
 	);

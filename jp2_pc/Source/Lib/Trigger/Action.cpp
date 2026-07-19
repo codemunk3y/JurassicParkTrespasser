@@ -3097,7 +3097,7 @@ void CSaveLevelAction::Start()
 			str_string = strRawData;
 		}
 
-		uint32 u4_prev = CTextOverlay::ptovTextSystem->u4FindSequenceEnd(ettTUTORIAL);
+		uintptr u4_prev = CTextOverlay::ptovTextSystem->u4FindSequenceEnd(ettTUTORIAL);
 		// Send the text to the text system, the text system copies the text so it can be
 		// in a local buffer
 		CTextOverlay::ptovTextSystem->u4DisplayFormattedString(str_string, fTime, u4Flags, clrText,u4_prev,ettTUTORIAL);

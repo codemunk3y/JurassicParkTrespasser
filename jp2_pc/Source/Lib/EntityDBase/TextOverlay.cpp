@@ -99,13 +99,13 @@ CTextOverlay::~CTextOverlay
 #define u4MAX_FORMAT_BUFFER		1024
 
 //**********************************************************************************************
-uint32 CTextOverlay::u4DisplayFormattedString
+uintptr CTextOverlay::u4DisplayFormattedString
 (
 	char*		str_text,			// C style text string
 	TSec		s_time,				// display time
 	uint32		u4_flags,			// formatting flags
 	CColour		clr,				// colour
-	uint32		u4_prev,			// previous line of text to attach to
+	uintptr		u4_prev,			// previous line of text to attach to
 	ETextType	ett					// type of the text
 )
 //*************************************
@@ -153,19 +153,19 @@ uint32 CTextOverlay::u4DisplayFormattedString
 		ptel_next->ptelNext = ptel;
 	}
 
-	return (uint32)ptel;
+	return (uintptr)ptel;
 }
 
 
 //*****************************************************************************************
-uint32 CTextOverlay::u4DisplayPositionedString
+uintptr CTextOverlay::u4DisplayPositionedString
 (
 	char*		str_text,			// C style text string
 	TSec		s_time,				// display time
 	uint32		u4_xpos,			// screen x position
 	uint32		u4_ypos,			// screen y position
 	CColour		clr,				// colour
-	uint32		u4_prev,			// previous line to attach to
+	uintptr		u4_prev,			// previous line to attach to
 	ETextType	ett				// type of the text
 )
 //*************************************
@@ -200,7 +200,7 @@ uint32 CTextOverlay::u4DisplayPositionedString
 		ptel_next->ptelNext = ptel;
 	}
 
-	return (uint32)ptel;
+	return (uintptr)ptel;
 }
 
 
@@ -286,7 +286,7 @@ void CTextOverlay::Process
 //**********************************************************************************************
 // This will return the handle of the earliest sequence in the list, this is the one you should
 // attach to if you want your test to appear in order.
-uint32 CTextOverlay::u4FindSequenceEnd
+uintptr CTextOverlay::u4FindSequenceEnd
 (
 	ETextType	ett
 )
@@ -295,7 +295,7 @@ uint32 CTextOverlay::u4FindSequenceEnd
 	for (TTextList::iterator i = ttlTextItems.begin(); i != ttlTextItems.end(); ++i)
 	{
 		if ( (*i).ettType == ett)
-			return (uint32)&(*(i));
+			return (uintptr)&(*(i));
 	}
 
 	return 0;

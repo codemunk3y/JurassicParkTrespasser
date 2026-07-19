@@ -2880,7 +2880,7 @@ void CAudioDaemon::ProcessSubtitle
 	//
 	uint8* pu1_data = (uint8*)(psth+1);
 
-	uint32	u4_prev = CTextOverlay::ptovTextSystem->u4FindSequenceEnd(ettSUBTITLE);
+	uintptr	u4_prev = CTextOverlay::ptovTextSystem->u4FindSequenceEnd(ettSUBTITLE);
 	TSec	s_time;
 
 	// go through all of the sections in the data block...
