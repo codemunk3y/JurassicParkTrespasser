@@ -7244,6 +7244,7 @@ inline bool GenericInitGradientDataPlanar(CDrawPolygonBase* poly, bool b_altpers
 	float f_dx;
 	float f_invdx;
 
+#if VER_ASM
 	__asm
 	{
 		//
@@ -7451,6 +7452,58 @@ EXIT_LOOP:
 		fstp	[fDVInvZ]
 		fstp	[fDInvZ]
 	}
+#else	// !VER_ASM - portable C++ planar gradient setup (x64)
+	// Find the fattest sub-triangle (first with area > 25px i.e. f_dx < -50, else the maximum).
+	// Mirrors CDrawPolygon::bInitGradientDataPlanar in DrawTriangle.hpp.
+	SRenderVertex* p_a = &arvRasterVertices[iNumRasterVertices - 2];
+	SRenderVertex* p_b = &arvRasterVertices[iNumRasterVertices - 1];
+	SRenderVertex* p_c = &arvRasterVertices[0];
+	prv_a = p_a;
+	prv_b = p_b;
+	prv_c = p_c;
+
+	f_dx = (p_b->v3Screen.tX - p_a->v3Screen.tX) * (p_c->v3Screen.tY - p_a->v3Screen.tY)
+	     - (p_c->v3Screen.tX - p_a->v3Screen.tX) * (p_b->v3Screen.tY - p_a->v3Screen.tY);
+
+	for (int i_v = 1; i_v < iNumRasterVertices && f_dx > fNegativeFifty; i_v++)
+	{
+		p_a = p_b;
+		p_b = p_c;
+		p_c = &arvRasterVertices[i_v];
+
+		float f_new = (p_b->v3Screen.tX - p_a->v3Screen.tX) * (p_c->v3Screen.tY - p_a->v3Screen.tY)
+		            - (p_c->v3Screen.tX - p_a->v3Screen.tX) * (p_b->v3Screen.tY - p_a->v3Screen.tY);
+		if (f_new < f_dx)
+		{
+			f_dx  = f_new;
+			prv_a = p_a;
+			prv_b = p_b;
+			prv_c = p_c;
+		}
+	}
+
+	// Too small to draw?
+	if (f_dx >= fMAX_NEG_AREA)
+		return false;
+
+	// Perspective texture / 1-over-z gradients for the chosen edge pair (written directly).
+	f_invdx = fInverse(f_dx);
+	float f_yab = prv_b->v3Screen.tY - prv_a->v3Screen.tY;
+	float f_yac = prv_c->v3Screen.tY - prv_a->v3Screen.tY;
+	float f_yab_invdx = f_yab * f_invdx;
+	float f_yac_invdx = f_yac * f_invdx;
+
+	float f_uab = prv_b->tcTex.tX - prv_a->tcTex.tX;
+	float f_uac = prv_c->tcTex.tX - prv_a->tcTex.tX;
+	float f_vab = prv_b->tcTex.tY - prv_a->tcTex.tY;
+	float f_vac = prv_c->tcTex.tY - prv_a->tcTex.tY;
+	float f_zab = prv_b->v3Screen.tZ - prv_a->v3Screen.tZ;
+	float f_zac = prv_c->v3Screen.tZ - prv_a->v3Screen.tZ;
+
+	fDUInvZ = f_uab * f_yac_invdx - f_uac * f_yab_invdx;
+	fDVInvZ = f_vab * f_yac_invdx - f_vac * f_yab_invdx;
+	fDInvZ  = f_zab * f_yac_invdx - f_zac * f_yab_invdx;
+#endif
 
 	// Calculate the subdivision length with respect to X.
 	iSubdivideLen    = persetSettings.iGetSubdivisionLen(fDInvZ, b_altpersp);
