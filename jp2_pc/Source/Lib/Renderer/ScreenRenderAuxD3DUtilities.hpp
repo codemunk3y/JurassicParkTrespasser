@@ -106,9 +106,9 @@ forceinline D3DCOLOR d3dGetFog
 	if (u4FromFloat(f_fog) >= u4FromFloat(fOneCompare))
 		return 0xFF000000;
 
-#if (TARGET_PROCESSOR == PROCESSOR_K6_3D)
+#if (TARGET_PROCESSOR == PROCESSOR_K6_3D) || !VER_ASM
 
-	// Convert to Direct3D colour form.
+	// Convert to Direct3D colour form (also the portable x64 path).
 	return D3DCOLOR(f_fog * 255.0f) << 24;
 
 #else
