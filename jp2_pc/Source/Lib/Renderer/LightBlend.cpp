@@ -385,7 +385,7 @@ uint32 *CLightBlend::au4MakeDitherTable
 //
 //**************************************
 {
-	uint32 mem_addr;
+	uintptr mem_addr;
 	uint32 *table_ptr;
 
 #if (DITHER_SIZE == 2)
@@ -402,7 +402,7 @@ uint32 *CLightBlend::au4MakeDitherTable
 
 	AlwaysAssert(au4AlphaRefDitherBuf);
 
-	mem_addr = (uint32)au4AlphaRefDitherBuf;
+	mem_addr = (uintptr)au4AlphaRefDitherBuf;
 
 	//
 	// Insure alignment on a table sized boundry.
@@ -451,7 +451,7 @@ uint32 *CLightBlend::au4MakeDitherTable
 
 	AlwaysAssert(au4AlphaRefDitherBuf);
 
-	mem_addr = (uint32)au4AlphaRefDitherBuf;
+	mem_addr = (uintptr)au4AlphaRefDitherBuf;
 
 	//
 	// Insure alignment on an 4*width*shades*entries boundry.
