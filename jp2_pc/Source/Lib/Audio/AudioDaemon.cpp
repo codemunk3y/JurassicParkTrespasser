@@ -596,7 +596,11 @@ char *CAudioDaemon::pcSaveSample
 	if (u4_type == AU_PSEUDO3D)
 	{
 		if (pins == NULL)
+#if VER_ASM
 			_asm int 3;
+#else
+			__debugbreak();
+#endif
 	}
 #endif
 

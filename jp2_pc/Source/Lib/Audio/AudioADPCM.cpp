@@ -93,7 +93,11 @@ CAudioADPCM::CAudioADPCM
 	if (cauheaderLocal.u1Bits == 8)
 	{
 		// 8 bit is not supported in Trespasser....
+#if VER_ASM
 		_asm int 3;
+#else
+		__debugbreak();
+#endif
 
 		// MONO:	Block alignment of 1024 = 4 byte header + 1020 adpcm samples = (2040+1) samples = 2041 bytes.
 		// STEREO:	Block alignment of 1024 = (4 byte header*2) + 1016 adpcm samples = (2032+2) samples = 2034 bytes.
@@ -140,7 +144,11 @@ uint32 CAudioADPCM::u4DecompressMono8bit
 )
 //**************************************
 {
+#if VER_ASM
 	_asm int 3;
+#else
+	__debugbreak();
+#endif
 	return 0;
 }
 
@@ -203,7 +211,11 @@ uint32 CAudioADPCM::u4DecompressStereo8bit
 )
 //**************************************
 {
+#if VER_ASM
 	_asm int 3;
+#else
+	__debugbreak();
+#endif
 	return 0;
 }
 
@@ -387,6 +399,9 @@ static const int i4Step[89] =
 // Block alignment of 1024 = 4 byte header + 1020 adpcm samples = (2040+1) samples = 4082 bytes.
 // Compression ratio = 25.08%
 //
+// Forward declaration (defined below); used by the non-asm mono decode path.
+static int32 i4SampleDecode(int32 i4_encoded_sample, int32 i4_predicted_sample, int32 i4_step_size);
+
 #pragma warning(disable:4035)
 static uint32 u4ADPCMDecodeM16
 (
@@ -396,6 +411,7 @@ static uint32 u4ADPCMDecodeM16
     uint32	u4_block_alignment
 )
 {
+#if VER_ASM
 	_asm
 	{
 		push	ebp
@@ -604,6 +620,66 @@ FINISH_SAMPLE:
 		mov		eax,edi
 		sub		eax,[pu1_dst]
 	}
+#else	// !VER_ASM - portable C++ mono decode (x64). Mirrors u4ADPCMDecodeS16 below.
+
+	uint8*	pu1_dst_start = pu1_dst;
+	int32	i4_block_length;
+	int32	i4_step_size;
+	uint32	u4_header;
+	int32	i4_pred_sample;
+	int32	i4_step_index;
+	int32	i4_enc_sample;
+
+	while (u4_src_length != 0)
+	{
+		if (u4_src_length < IMAADPCM_HEADER_LENGTH * 1)
+			break;
+
+		i4_block_length  = std::min((uint32)u4_block_alignment, (uint32)u4_src_length);
+		u4_src_length   -= i4_block_length;
+		i4_block_length -= IMAADPCM_HEADER_LENGTH * 1;
+
+		//  Channel header: low word = predicted sample (signed), high byte = step index.
+		u4_header      = *(uint32*)pu1_src;
+		pu1_src       += sizeof(uint32);
+		i4_pred_sample = (int32)(int16)LOWORD(u4_header);
+		i4_step_index  = (int32)(uint8)HIWORD(u4_header);
+
+		Assert(i4_step_index >= 0 && i4_step_index <= 88);
+
+		//  Write out the first (header) sample.
+		*(int16*)pu1_dst = (int16)i4_pred_sample;
+		pu1_dst += sizeof(int16);
+
+		//  Each source byte holds two samples: low nibble first, then high nibble.
+		while ((i4_block_length--) > 0)
+		{
+			uint8 u1_byte = *pu1_src++;
+
+			//  Low nibble.
+			i4_enc_sample  = u1_byte & 0x0F;
+			i4_step_size   = i4Step[i4_step_index];
+			i4_pred_sample = i4SampleDecode(i4_enc_sample, i4_pred_sample, i4_step_size);
+			i4_step_index += i4NextStep[i4_enc_sample];
+			if (i4_step_index < 0)			i4_step_index = 0;
+			else if (i4_step_index > 88)	i4_step_index = 88;
+			*(int16*)pu1_dst = (int16)i4_pred_sample;
+			pu1_dst += sizeof(int16);
+
+			//  High nibble.
+			i4_enc_sample  = (u1_byte >> 4) & 0x0F;
+			i4_step_size   = i4Step[i4_step_index];
+			i4_pred_sample = i4SampleDecode(i4_enc_sample, i4_pred_sample, i4_step_size);
+			i4_step_index += i4NextStep[i4_enc_sample];
+			if (i4_step_index < 0)			i4_step_index = 0;
+			else if (i4_step_index > 88)	i4_step_index = 88;
+			*(int16*)pu1_dst = (int16)i4_pred_sample;
+			pu1_dst += sizeof(int16);
+		}
+	}
+
+	return (uint32)(pu1_dst - pu1_dst_start);
+#endif
 }
 #pragma warning(default:4035)
 
