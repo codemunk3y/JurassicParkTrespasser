@@ -590,11 +590,15 @@ uint CNewSymbolTable::uRead
 				std::cout << "Unable to add symbol to list.  Aborting.";
 
 				// Halt the program in a user break point.
+#if VER_ASM
 				_asm
 				{
 					// Halt the program here.
 					int	3;
 				}
+#else
+				__debugbreak();
+#endif
 			}
 		}
 	}

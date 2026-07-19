@@ -626,10 +626,14 @@ void CEasyString::Printf
 		assert(0);
 
 		// Die here!
+#if VER_ASM
 		_asm
 		{
 			int	3
 		}
+#else
+		__debugbreak();
+#endif
 	}
 
 	// Reset the argument list pointer to null.
