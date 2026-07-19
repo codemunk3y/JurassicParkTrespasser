@@ -328,12 +328,19 @@ void CenterUIWindow(CUIWnd * puiwnd)
         return;
     }
 
+    // No main screen raster yet (e.g. render surface not created in a headless run) -
+    // there is nothing to centre against, so bail out instead of dereferencing null.
+    if (!prasMainScreen)
+    {
+        return;
+    }
+
     rcOld = puiwnd->m_rc;
 
     // Center the dialog over the base window
-    SetRect(&rcClient, 
-            0, 
-            0, 
+    SetRect(&rcClient,
+            0,
+            0,
             prasMainScreen->iWidthFront,
             prasMainScreen->iHeightFront);
 
