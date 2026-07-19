@@ -3013,7 +3013,7 @@ bool CAudioDaemon::bPlaySoundEffect
 
 		if (pser)
 		{
-			pser->u4SoundID = (uint32)(uintptr)psam;
+			pser->u4SoundID = (uintptr)psam;
 		}
 
 		// if we are playing a dino effect then we need to mute any ambient sounds
@@ -3512,7 +3512,7 @@ bool bImmediateSoundEffect
 //**********************************************************************************************
 void StopSoundEffect
 (
-	uint32	u4_id
+	uintptr	u4_id
 )
 //*************************************
 {

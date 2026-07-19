@@ -703,7 +703,7 @@ private:
 
 	// Vocal variables.
 	TSec			sDoneTalking;		// Time stamp of the time we'll finish our "effects" vocal
-	uint32			u4AudioID;			// The ID of the vocalization currently being made by Anne.
+	uintptr			u4AudioID;			// The ID of the vocalization currently being made by Anne.
 										//  Zero if none.
 
 	//**************************************************************************************

@@ -312,7 +312,7 @@ extern bool bImmediateSoundEffect
 // structure.
 void StopSoundEffect
 (
-	uint32	u4_id
+	uintptr	u4_id
 );
 
 

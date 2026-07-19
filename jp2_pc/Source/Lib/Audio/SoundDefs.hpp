@@ -293,7 +293,7 @@ struct SSoundTransfer
 //
 struct SSoundEffectResult
 {
-	uint32	u4SoundID;			// ID to identify the sound (not sample).
+	uintptr	u4SoundID;			// ID to identify the sound (not sample).
 	float	fPlayTime;			// length of the playing sample in seconds.
 	float	fMasterVolume;		// Ideal master volume for this sample
 	float	fAttenuation;		// Ideal attenuation for this sample

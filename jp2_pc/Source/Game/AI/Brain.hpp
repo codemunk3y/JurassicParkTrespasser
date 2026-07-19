@@ -255,7 +255,7 @@ public:
 	TSec					sSampleStart;	//  When we started the sound.
 	TSec					sOpenMouth;		//  When we should open the mouth
 	TSec					sCloseMouth;	//  When we should close the mouth
-	uint32					u4AudioID;	// The ID of the vocalization currently being made by the dino.
+	uintptr					u4AudioID;	// The ID of the vocalization currently being made by the dino.
 										//  Zero if none.
 
 	//
