@@ -923,7 +923,7 @@ bool CFileIO::bWriteImage()
 // Implementation of CFileIO::bReadImage.
 // 
 bool CFileIO::bReadImage(PFNWORLDLOADNOTIFY pfnWorldNotify /* = NULL */, 
-                         uint32 ui32_NotifyParam /* = 0 */)
+                         uintptr ui32_NotifyParam /* = 0 */)
 {
 	uint u_count;
 

@@ -56,7 +56,7 @@
 #include <set>
 
 #ifndef PFNWORLDLOADNOTIFY
-typedef uint32 (__stdcall * PFNWORLDLOADNOTIFY)(uint32 dwContext, uint32 dwParam1, uint32 dwParam2, uint32 dwParam3);
+typedef uint32 (__stdcall * PFNWORLDLOADNOTIFY)(uintptr dwContext, uint32 dwParam1, uint32 dwParam2, uint32 dwParam3);
 #endif
 
 //
@@ -700,7 +700,7 @@ public:
 	bool bReadImage
 	(
         PFNWORLDLOADNOTIFY pfnWorldNotify = NULL, 
-        uint32 ui32_NotifyParam = 0
+        uintptr ui32_NotifyParam = 0
 	);
 	//
 	//*****************************************************************************************

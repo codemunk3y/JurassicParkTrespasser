@@ -117,7 +117,7 @@
 #define iMB(X) (X >> 20)
 
 #ifndef PFNWORLDLOADNOTIFY
-typedef uint32 (__stdcall * PFNWORLDLOADNOTIFY)(uint32 dwContext, uint32 dwParam1, uint32 dwParam2, uint32 dwParam3);
+typedef uint32 (__stdcall * PFNWORLDLOADNOTIFY)(uintptr dwContext, uint32 dwParam1, uint32 dwParam2, uint32 dwParam3);
 #endif
 
 //
@@ -150,7 +150,7 @@ const int iCachePercent = 40;
 //
 extern rptr<CTexturePageManager>    ptexmCacheTextures;
 extern PFNWORLDLOADNOTIFY           g_pfnWorldLoadNotify;
-extern uint32                       g_u4NotifyParam;
+extern uintptr                      g_u4NotifyParam;
 extern bool                         bIsTrespasser;
 
 #if bTRACK_D3D_RASTERS

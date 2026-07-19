@@ -40,7 +40,7 @@
 
 
 #ifndef PFNWORLDLOADNOTIFY
-typedef uint32 (__stdcall * PFNWORLDLOADNOTIFY)(uint32 dwContext, uint32 dwParam1, uint32 dwParam2, uint32 dwParam3);
+typedef uint32 (__stdcall * PFNWORLDLOADNOTIFY)(uintptr dwContext, uint32 dwParam1, uint32 dwParam2, uint32 dwParam3);
 #endif
 
 class CGroffLoader
@@ -69,7 +69,7 @@ public:
 	bool bLoadHeader(uint& u_version_number);
 
     PFNWORLDLOADNOTIFY      pfnWorldNotify;
-    uint32                  ui32_NotifyParam;
+    uintptr                  ui32_NotifyParam;
 };
 
 #endif

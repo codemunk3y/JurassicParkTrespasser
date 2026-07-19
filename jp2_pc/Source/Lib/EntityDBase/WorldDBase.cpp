@@ -1058,7 +1058,7 @@ CRenderDB*  ps_renderDB = 0;
 
 
 	//*****************************************************************************************
-	int32 CWorld::bLoadScene(const char* str_filename, PFNWORLDLOADNOTIFY pfnLoadNotify, uint32 ui32_NotifyParam)
+	int32 CWorld::bLoadScene(const char* str_filename, PFNWORLDLOADNOTIFY pfnLoadNotify, uintptr ui32_NotifyParam)
 	{
 		// Loads a scene, whether or not the database already has data in it.
 
@@ -1129,7 +1129,7 @@ CRenderDB*  ps_renderDB = 0;
 	}
 
 	//*****************************************************************************************
-	int32 CWorld::bLoadWorld(const char* str_filename, bool b_reset, PFNWORLDLOADNOTIFY pfnLoadNotify, uint32 ui32_NotifyParam)
+	int32 CWorld::bLoadWorld(const char* str_filename, bool b_reset, PFNWORLDLOADNOTIFY pfnLoadNotify, uintptr ui32_NotifyParam)
 	{
         int32 i4_ret = 0;
 

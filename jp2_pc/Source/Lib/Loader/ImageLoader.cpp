@@ -172,7 +172,7 @@ CLoadImageDirectory::CLoadImageDirectory
 (
 	const char*		str_grf_name,			// name of the GRF file being loaded
     PFNWORLDLOADNOTIFY pfnInWorldNotify,    // Notification callback
-    uint32 u4InNotifyParam                  // Notificaiton parameter
+    uintptr u4InNotifyParam                  // Notificaiton parameter
 )
 //*************************************
 {

@@ -239,7 +239,7 @@ CProfileStat psBumpPack("Bumpmap pack", &psLoader);
 	//
 
 	// Constructor requiring a filename.
-	CLoadWorld::CLoadWorld(const char* str_filename, PFNWORLDLOADNOTIFY pfnWorldNotify, uint32 ui32_NotifyParam) 
+	CLoadWorld::CLoadWorld(const char* str_filename, PFNWORLDLOADNOTIFY pfnWorldNotify, uintptr ui32_NotifyParam) 
 	{
         i4Error = 0;
 

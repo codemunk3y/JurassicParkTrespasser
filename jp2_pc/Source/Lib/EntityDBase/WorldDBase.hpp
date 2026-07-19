@@ -80,7 +80,7 @@ class TListInstance;
 class TListConstChar;
 
 
-typedef uint32 (__stdcall * PFNWORLDLOADNOTIFY)(uint32 dwContext, uint32 dwParam1, uint32 dwParam2, uint32 dwParam3);
+typedef uint32 (__stdcall * PFNWORLDLOADNOTIFY)(uintptr dwContext, uint32 dwParam1, uint32 dwParam2, uint32 dwParam3);
 
 //
 // Class definitions.
@@ -385,7 +385,7 @@ public:
 	(
 		const char* str_filename,		// File name of scene to load.
         PFNWORLDLOADNOTIFY pfnLoadNotify = NULL, // Notification callback
-        uint32 u32_NotifyParam = 0      // Parameter to Notification callback
+        uintptr u32_NotifyParam = 0      // Parameter to Notification callback
 	);
 	//
 	// Loads the scene file.  Determines if this is a full reset or partial based on the GROFFs
@@ -405,7 +405,7 @@ public:
 		const char* str_filename,		// File name of scene to load.
 		bool b_reset = false,			// Reset positions only, do not load.
         PFNWORLDLOADNOTIFY pfnLoadNotify = NULL, // Notification callback
-        uint32 u32_NotifyParam = 0      // Parameter to notification callback
+        uintptr u32_NotifyParam = 0      // Parameter to notification callback
 	);
 	//
 	// Loads the scene file.  If !b_reset, loads specified Groffs.  Positions instances.

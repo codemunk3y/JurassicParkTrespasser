@@ -92,7 +92,7 @@
 
 
 #ifndef PFNWORLDLOADNOTIFY
-typedef uint32 (__stdcall * PFNWORLDLOADNOTIFY)(uint32 dwContext, uint32 dwParam1, uint32 dwParam2, uint32 dwParam3);
+typedef uint32 (__stdcall * PFNWORLDLOADNOTIFY)(uintptr dwContext, uint32 dwParam1, uint32 dwParam2, uint32 dwParam3);
 #endif
 
 //**********************************************************************************************
@@ -185,7 +185,7 @@ public:
 	uint32											u4LocalImageSize;
     int32                                           i4Error;
     PFNWORLDLOADNOTIFY                              pfnWorldNotify;
-    uint32                                          u4NotifyParam;
+    uintptr                                          u4NotifyParam;
 
 	//*****************************************************************************************
 	// Allocate the requested number of bytes from the image loader fast heap, The memory 
@@ -234,7 +234,7 @@ public:
 	(
 		const char*	str_grf_filename,			// the GRF file being loaded
         PFNWORLDLOADNOTIFY pfnInWorldNotify = NULL, 
-        uint32 u4InNotifyParam = 0
+        uintptr u4InNotifyParam = 0
 	);
 
 

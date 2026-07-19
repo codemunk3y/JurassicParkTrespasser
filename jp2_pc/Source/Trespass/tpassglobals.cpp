@@ -21,7 +21,7 @@ extern CMainWnd *   g_pMainWnd;
 
 CTPassGlobals               g_CTPassGlobals;
 PFNWORLDLOADNOTIFY          g_pfnWorldLoadNotify;
-uint32                      g_u4NotifyParam;
+uintptr                      g_u4NotifyParam;
 const float                 g_fMaxPower = 3.0f;
 const float                 g_fMinPower = 0.1f;
 const float                 g_afGamma[10] =
@@ -39,7 +39,7 @@ const float                 g_afGamma[10] =
 
 void LineColour(int, int, int) {}
 
-uint32 __stdcall TPassLoadNotify(uint32 dwContext, 
+uint32 __stdcall TPassLoadNotify(uintptr dwContext, 
                                  uint32 dwParam1, 
                                  uint32 dwParam2, 
                                  uint32 dwParam3)
@@ -407,7 +407,7 @@ int CTPassGlobals::LoadScene(LPSTR pszScene, LPSTR pszOrigSCN)
     {
         dlg.SetupUIWnd();
         g_pfnWorldLoadNotify = TPassLoadNotify;
-        g_u4NotifyParam = (uint32)pdlg;
+        g_u4NotifyParam = (uintptr)pdlg;
     }
     else
     {
@@ -421,7 +421,7 @@ int CTPassGlobals::LoadScene(LPSTR pszScene, LPSTR pszOrigSCN)
     // Loads the scene.  If a reset is required, this function handles it.
 	iRet = wWorld.bLoadScene(pszScene, 
                              (PFNWORLDLOADNOTIFY)TPassLoadNotify, 
-                             (uint32)pdlg);
+                             (uintptr)pdlg);
 
 
     d3dDriver.Restore();

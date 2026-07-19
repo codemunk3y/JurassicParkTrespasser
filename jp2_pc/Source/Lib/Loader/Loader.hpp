@@ -117,7 +117,7 @@
 
 
 #ifndef PFNWORLDLOADNOTIFY
-typedef uint32 (__stdcall * PFNWORLDLOADNOTIFY)(uint32 dwContext, uint32 dwParam1, uint32 dwParam2, uint32 dwParam3);
+typedef uint32 (__stdcall * PFNWORLDLOADNOTIFY)(uintptr dwContext, uint32 dwParam1, uint32 dwParam2, uint32 dwParam3);
 #endif
 
 //**********************************************************************************************
@@ -718,7 +718,7 @@ public:
 	//
 
 	// Constructor requiring a filename.
-	CLoadWorld(const char* str_filename, PFNWORLDLOADNOTIFY pfnWorldNotify = NULL, uint32 ui32_NotifyParam = 0);
+	CLoadWorld(const char* str_filename, PFNWORLDLOADNOTIFY pfnWorldNotify = NULL, uintptr ui32_NotifyParam = 0);
 
 	// Destructor.
 	~CLoadWorld();
