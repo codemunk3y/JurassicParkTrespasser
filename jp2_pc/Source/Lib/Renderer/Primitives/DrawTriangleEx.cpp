@@ -6596,6 +6596,7 @@ inline bool GenericInitTriangleDataLinear
 	float f_dv;
 	float f_temp;
 
+#if VER_ASM
 	__asm
 	{
 		mov		edi,prv_c						// prv_c = edi
@@ -6782,6 +6783,42 @@ COPY_UV:
 
 DONE_WITH_COPY:
 	}
+#else	// !VER_ASM - portable C++ linear triangle gradient setup (x64)
+	// Triangle edge deltas.
+	float f_yab = prv_b->v3Screen.tY - prv_a->v3Screen.tY;
+	float f_yac = prv_c->v3Screen.tY - prv_a->v3Screen.tY;
+	float f_xab = prv_b->v3Screen.tX - prv_a->v3Screen.tX;
+	float f_xac = prv_c->v3Screen.tX - prv_a->v3Screen.tX;
+
+	f_dx = f_xab * f_yac - f_xac * f_yab;
+	if (f_dx >= fMAX_NEG_AREA)
+		return false;
+
+	f_invdx     = fInverse(f_dx);
+	f_yab_invdx = f_yab * f_invdx;
+	f_yac_invdx = f_yac * f_invdx;
+
+	float f_uab = prv_b->tcTex.tX - prv_a->tcTex.tX;
+	float f_uac = prv_c->tcTex.tX - prv_a->tcTex.tX;
+	float f_vab = prv_b->tcTex.tY - prv_a->tcTex.tY;
+	float f_vac = prv_c->tcTex.tY - prv_a->tcTex.tY;
+
+	// Linear (non-perspective) u/v steps with respect to x.
+	f_du = f_uab * f_yac_invdx - f_uac * f_yab_invdx;
+	f_dv = f_vab * f_yac_invdx - f_vac * f_yab_invdx;
+
+	if (b_update)
+	{
+		// SetMinAbs matches the asm here (sign change -> 0, else keep smaller magnitude).
+		SetMinAbs(fDU, f_du);
+		SetMinAbs(fDV, f_dv);
+	}
+	else
+	{
+		fDU = f_du;
+		fDV = f_dv;
+	}
+#endif
 
 	return true;
 
