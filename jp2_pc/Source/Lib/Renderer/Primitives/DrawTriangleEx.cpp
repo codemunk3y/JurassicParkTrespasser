@@ -5840,6 +5840,7 @@ inline bool GenericInitTriangleData
 	float f_dinvz;
 	float f_temp;
 
+#if VER_ASM
 	__asm
 	{
 		mov		edi,prv_c						// prv_c = edi
@@ -6047,6 +6048,48 @@ COPY_UVZ:
 
 DONE_WITH_COPY:
 	}
+#else	// !VER_ASM - portable C++ triangle gradient setup (x64)
+	// Triangle edge deltas.
+	float f_yab = prv_b->v3Screen.tY - prv_a->v3Screen.tY;
+	float f_yac = prv_c->v3Screen.tY - prv_a->v3Screen.tY;
+	float f_xab = prv_b->v3Screen.tX - prv_a->v3Screen.tX;
+	float f_xac = prv_c->v3Screen.tX - prv_a->v3Screen.tX;
+
+	// f_dx == -2 * triangle area; reject triangles that are too small / back-facing.
+	f_dx = f_xab * f_yac - f_xac * f_yab;
+	if (f_dx >= fMAX_NEG_AREA)
+		return false;
+
+	f_invdx     = fInverse(f_dx);
+	f_yab_invdx = f_yab * f_invdx;
+	f_yac_invdx = f_yac * f_invdx;
+
+	float f_uab = prv_b->tcTex.tX - prv_a->tcTex.tX;
+	float f_uac = prv_c->tcTex.tX - prv_a->tcTex.tX;
+	float f_vab = prv_b->tcTex.tY - prv_a->tcTex.tY;
+	float f_vac = prv_c->tcTex.tY - prv_a->tcTex.tY;
+	float f_zab = prv_b->v3Screen.tZ - prv_a->v3Screen.tZ;
+	float f_zac = prv_c->v3Screen.tZ - prv_a->v3Screen.tZ;
+
+	// Step values for u, v and 1/z with respect to x.
+	f_duinvz = f_uab * f_yac_invdx - f_uac * f_yab_invdx;
+	f_dvinvz = f_vab * f_yac_invdx - f_vac * f_yab_invdx;
+	f_dinvz  = f_zab * f_yac_invdx - f_zac * f_yab_invdx;
+
+	if (b_update)
+	{
+		// SetMinAbs(u,v) / SetMax(z) - matches the asm (pure min-abs, not the revised helper).
+		if (fabs(f_duinvz) < fabs(fDUInvZ)) fDUInvZ = f_duinvz;
+		if (fabs(f_dvinvz) < fabs(fDVInvZ)) fDVInvZ = f_dvinvz;
+		if (f_dinvz > fDInvZ) fDInvZ = f_dinvz;
+	}
+	else
+	{
+		fDUInvZ = f_duinvz;
+		fDVInvZ = f_dvinvz;
+		fDInvZ  = f_dinvz;
+	}
+#endif
 
 	// Calculate the subdivision length with respect to X.
 	iSubdivideLen    = persetSettings.iGetSubdivisionLen(fDInvZ, b_altpersp);
