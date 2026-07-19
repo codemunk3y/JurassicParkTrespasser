@@ -175,6 +175,7 @@ std::ostream			dout(&debug_stream);
 			{
 				// write the same string to the file
 				dbgfile << buf;
+				dbgfile.flush();		// flush per line so the log survives a crash / force-quit
 			}
 
 			u4Off = 0;
