@@ -3978,6 +3978,7 @@ inline void GenericInitializePolygonData(CRenderPolygon *rpoly)
 	u4TextureTileMask = (pras_texture->u4HeightTileMask << 9) | pras_texture->u4WidthTileMask;
 	u4TextureTileMaskStepU = pras_texture->u4WidthTileMask;
 
+#if VER_ASM
 	__asm
 	{
 		mov		ebx,bClampUV
@@ -4127,6 +4128,32 @@ VTXLOOP2:
 
 VTXDONE:
 	}
+#else	// !VER_ASM - portable C++ vertex copy + texture-coordinate scaling (x64).
+	fTexWidth  = pras_texture->fWidth;
+	fTexHeight = pras_texture->fHeight;
+
+	int i_count = rpoly->paprvPolyVertices.uLen;
+	for (int i_v = 0; i_v < i_count; i_v++)
+	{
+		SRenderVertex* prv = rpoly->paprvPolyVertices[i_v];
+		SRenderVertex& rv  = arvRasterVertices[i_v];
+
+		float f_tx = prv->tcTex.tX * fTexWidth;
+		float f_ty = prv->tcTex.tY * fTexHeight;
+		if (bClampUV)
+		{
+			f_tx += fTexEdgeTolerance;
+			f_ty += fTexEdgeTolerance;
+		}
+		rv.tcTex.tX = f_tx * prv->v3Screen.tZ;
+		rv.tcTex.tY = f_ty * prv->v3Screen.tZ;
+		rv.v3Screen = prv->v3Screen;
+
+		// Integer screen Y via the 19.32 magic-constant trick (matches the asm bit-for-bit).
+		double d_temp_a = (double)prv->v3Screen.tY + dFloatToFixed32;
+		rv.iYScr = ((const int32*)&d_temp_a)[1] & 0x0007ffff;
+	}
+#endif
 }
 
 
