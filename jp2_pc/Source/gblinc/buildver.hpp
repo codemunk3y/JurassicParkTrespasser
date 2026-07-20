@@ -297,7 +297,7 @@
 	#define VER_DEBUG_TEXT		TRUE
 	#define VER_LOG_MESSAGES	TRUE
 	#define VER_TIMING_STATS	TRUE
-	#define VER_ASM				TRUE
+	#define VER_ASM				FALSE
 	#define VER_CLIP3D_CHECKS	TRUE
 	#define VER_ADD_DIRECT3D	FALSE
 	#define VER_CLAMP_UV_TILE	FALSE
@@ -330,6 +330,19 @@
 #else
 
 	#error BUILDVER_MODE does not match a defined project mode!
+
+#endif
+
+
+//
+// x64 has no inline assembler: MSVC rejects __asm entirely on _M_X64, and the
+// hand-written 32-bit asm assumes a 4-byte pointer besides. Force the portable
+// C++ paths there, whatever the mode above asked for. Win32 is unaffected.
+//
+#if defined(_M_X64)
+
+	#undef  VER_ASM
+	#define VER_ASM				FALSE
 
 #endif
 
