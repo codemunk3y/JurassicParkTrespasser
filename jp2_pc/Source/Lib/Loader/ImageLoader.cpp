@@ -578,7 +578,7 @@ bool CLoadImageDirectory::bProcessLocalSwapFile
 	strcpy(str_wildcard,str_local_swap_dir);
 	strcat(str_wildcard,"\\*.swp");
 
-	int32 i4_ffhandle = _findfirst(str_wildcard, &fnd);
+	intptr_t i4_ffhandle = _findfirst(str_wildcard, &fnd);
 
 	//
 	// If FindFirst reports an error there is probably no files that match so copy the
