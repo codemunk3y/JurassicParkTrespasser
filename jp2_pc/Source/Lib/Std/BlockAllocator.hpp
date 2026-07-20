@@ -111,7 +111,7 @@ public:
 	//******************************************************************************************
 	void* operator new(size_t i_size)
 	{
-		Assert(sizeof(T_TYPE) >= sizeof(SFreeBlock));
+
 		Assert(i_size == sizeof(T_TYPE));
 		Assert(T_TYPE::stStore.iNumAlloc >= 0);
 		Assert(T_TYPE::stStore.pfhFreeStore != 0);
@@ -132,9 +132,19 @@ public:
 		else
 		{
 			// Allocate a new element from the fast heap.
-			T_TYPE::stStore.pfhFreeStore->Align(sizeof(int));
+			//
+			// operator delete re-uses the block as an SFreeBlock, writing the next-free
+			// pointer and handle into the block itself, so reserve room for that even
+			// when the type is smaller. The bound MOVES with the architecture:
+			// SFreeBlock is 8 bytes on Win32 but 16 on x64 (8-byte pointer + handle +
+			// padding), so a type of 8..15 bytes fits on Win32 and overruns on x64 -
+			// CQuadVertexTForm is exactly such a type. Win32 is unaffected: there
+			// sizeof(SFreeBlock) is 8 and every user already exceeded it.
+			uint u_bytes = Max(uint(i_size), uint(sizeof(SFreeBlock)));
 
-			void* pv_new = T_TYPE::stStore.pfhFreeStore->pvAllocate(i_size);
+			T_TYPE::stStore.pfhFreeStore->Align(__alignof(SFreeBlock));
+
+			void* pv_new = T_TYPE::stStore.pfhFreeStore->pvAllocate(u_bytes);
 
 			// In debug mode, trash the contents of the returned block.
 			#if VER_DEBUG
