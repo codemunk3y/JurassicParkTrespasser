@@ -163,9 +163,19 @@ public:
 		else
 		{
 			// Allocate a new element from the fast heap.
-			pfhFreeStore->Align(sizeof(int));
+			//
+			// A freed block is re-used as an SFreeBlock - Free() writes the next-free
+			// pointer into the block itself - so every block must be big enough to hold
+			// one, and aligned for it. On x64 that pointer is 8 bytes while T may be
+			// smaller (CCoef is a single int), so a size-1 block used to be overrun by
+			// Free(): it trampled the neighbouring block and left a torn pointer in the
+			// free list, which the next patAlloc dereferenced and died on. Win32 is
+			// unaffected - there sizeof(SFreeBlock) == sizeof(int) == 4.
+			uint u_bytes = Max(uint(u_size * sizeof(T)), uint(sizeof(SFreeBlock)));
 
-			void* pv_new = pfhFreeStore->pvAllocate(u_size * sizeof(T));
+			pfhFreeStore->Align(sizeof(SFreeBlock));
+
+			void* pv_new = pfhFreeStore->pvAllocate(u_bytes);
 
 			// In debug mode, trash the contents of the returned block.
 			#if VER_DEBUG
