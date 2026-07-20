@@ -92,6 +92,27 @@ CUIWnd * CUIManager::GetActiveUIWnd()
 
 void CUIManager::Draw()
 {
+    //
+    // A level transition tears the world down and rebuilds it, and the UI can be asked to
+    // draw in the window where the main screen raster still exists but its video surface
+    // does not (measured: prasMainScreen valid, pSurface null - so a null check on
+    // prasMainScreen alone does not cover this). Clear() would then write through that
+    // null surface: on x64 a level jump died here with an access violation reading 0xB0.
+    // There is nothing to draw into, so skip the frame, and report the state once so a
+    // recurrence is visible rather than silently swallowed.
+    //
+    if (!prasMainScreen || !prasMainScreen->pSurface)
+    {
+        static bool b_reported = false;
+        if (!b_reported)
+        {
+            b_reported = true;
+            dprintf("CUIManager::Draw skipped - prasMainScreen=%p pSurface=%p\n",
+                    (void*)prasMainScreen.ptPtrRaw(),
+                    prasMainScreen ? prasMainScreen->pSurface : NULL);
+        }
+        return;
+    }
     RECT    rc;
 
     SetRect(&m_rcInvalid, 
