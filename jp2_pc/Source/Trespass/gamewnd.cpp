@@ -31,6 +31,7 @@
 #include "..\Game\AI\AIMain.hpp"
 #include "..\Lib\Sys\Profile.hpp"
 #include "..\Lib\View\RenderD3D11.hpp"
+#include "..\Lib\View\RenderVR.hpp"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -976,6 +977,12 @@ void CGameWnd::DrawWndInfo(CRaster * pRaster, RECT * prc)
 	    // window so it can lazily create its device/swap chain on it.  No-op unless
 	    // enabled; idempotent.
 	    RenderD3D11::SetWindow(g_hwnd);
+
+	    // EXPERIMENTAL VR BRING-UP (env TRESPASS_VR): attempt OpenXR instance/system
+	    // creation once (idempotent; self-guards after the first try).  No-op unless
+	    // enabled or no OpenXR runtime is present - it just logs and returns.  M1 only
+	    // brings the runtime up and logs what it finds; it renders nothing yet.
+	    RenderVR::bInit();
 
 	    gmlGameLoop.Paint();
 

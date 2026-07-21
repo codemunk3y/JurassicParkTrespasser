@@ -24,6 +24,7 @@ list(APPEND View_Inc
     ${CMAKE_SOURCE_DIR}/source/Lib/View/RasterFile.hpp
     ${CMAKE_SOURCE_DIR}/source/Lib/View/RasterPool.hpp
     ${CMAKE_SOURCE_DIR}/Source/Lib/View/RenderD3D11.hpp
+    ${CMAKE_SOURCE_DIR}/Source/Lib/View/RenderVR.hpp
     ${CMAKE_SOURCE_DIR}/Source/Lib/View/RasterVid.hpp
     ${CMAKE_SOURCE_DIR}/source/Lib/View/Viewport.hpp
     ${CMAKE_SOURCE_DIR}/Source/Lib/View/ColourT.hpp
@@ -55,6 +56,7 @@ list(APPEND View_Src
     ${CMAKE_SOURCE_DIR}/Source/Lib/View/RasterFile.cpp
     ${CMAKE_SOURCE_DIR}/Source/Lib/View/RasterPool.cpp
     ${CMAKE_SOURCE_DIR}/Source/Lib/View/RenderD3D11.cpp
+    ${CMAKE_SOURCE_DIR}/Source/Lib/View/RenderVR.cpp
     ${CMAKE_SOURCE_DIR}/Source/Lib/View/W95/RasterVid.cpp
     ${CMAKE_SOURCE_DIR}/Source/Lib/View/W95/Video.cpp
     ${CMAKE_SOURCE_DIR}/Source/Lib/View/Viewport.cpp
@@ -63,6 +65,7 @@ list(APPEND View_Src
 include_directories(
     ${CMAKE_SOURCE_DIR}/Source
     ${CMAKE_SOURCE_DIR}/Source/gblinc
+    ${CMAKE_SOURCE_DIR}/Inc              # vendored OpenXR headers (Inc/openxr) for RenderVR
 )
 
 add_common_options()
