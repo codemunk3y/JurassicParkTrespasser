@@ -211,10 +211,10 @@ QualityData qdQualitySettings[5] =
 		1.25f,	// Amount to scale depth sort distances by.
 
 		4.0f,	// Mesh detail reduction multiplier.
-		1.25f,	// Object culling multiplier.
-		1.25f,	// Shadow culling multiplier
+		1.75f,	// Object culling multiplier.
+		1.75f,	// Shadow culling multiplier
 
-		1.0f,	// Scale for the far clipping plane.
+		1.75f,	// Scale for the far clipping plane.
 
 		1.20f,	// Water resolution multiplier.
 
