@@ -21,6 +21,7 @@
 #include <dxgi.h>
 #include <d3dcompiler.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <vector>
 #include <unordered_map>
 
@@ -45,6 +46,8 @@ namespace
 	// ---- Pipeline -----------------------------------------------------------------------
 	ID3D11VertexShader*      s_pVS            = 0;
 	ID3D11PixelShader*       s_pPS            = 0;
+	ID3D11PixelShader*       s_pDetilePS      = 0;	// hex-tiling variant, wrap batches
+	float                    s_f_detile_strength = -1.0f;	// <0 = not yet read from TRESPASS_DETILE
 	ID3D11InputLayout*       s_pLayout        = 0;
 	ID3D11Buffer*            s_pVB            = 0;
 	ID3D11Buffer*            s_pCB            = 0;
@@ -166,6 +169,55 @@ namespace
 		"  float4 c = gTex.Sample(gSmp, i.uv) * i.col;\n"
 		"  clip(c.a - 0.003);\n"     // discard colour-key holes so they don't write depth
 		"  return c;\n"
+		"}\n";
+
+	// Optional hex-tiling variant of the textured PS (TRESPASS_DETILE).  For wrap (tiling)
+	// surfaces it breaks up obvious texture repetition at distance by blending a few per-tile
+	// rotated/offset samples (Mikkelsen hex-tiling), faded in by minification (f_far).  Bound
+	// only for wrap batches; SampleGrad keeps mips/aniso correct despite the rotation.
+	const char* k_psz_ps_detile =
+		"Texture2D    gTex : register(t0);\n"
+		"SamplerState gSmp : register(s0);\n"
+		"cbuffer CbView : register(b0) { float4 gViewParams; }\n"
+		"struct VSOut { float4 pos : SV_Position; float4 col : COLOR0; float2 uv : TEXCOORD0; };\n"
+		"float2 dt_hash(float2 p){\n"
+		"  p = float2(dot(p, float2(127.1,311.7)), dot(p, float2(269.5,183.3)));\n"
+		"  return frac(sin(p) * 43758.5453);\n"
+		"}\n"
+		"float4 main(VSOut i) : SV_Target {\n"
+		"  float2 uv = i.uv;\n"
+		"  float2 dx = ddx(uv);\n"
+		"  float2 dy = ddy(uv);\n"
+		"  float4 c0 = gTex.SampleGrad(gSmp, uv, dx, dy);\n"
+		"  float f_foot = max(dot(dx,dx), dot(dy,dy));\n"
+		"  float f_far = saturate(log2(max(f_foot,1e-8)) * 0.5 + 6.0);\n"
+		"  float f_t = saturate(gViewParams.w) * f_far;\n"
+		"  if (f_t < 0.01) { clip(c0.a - 0.003); return c0 * i.col; }\n"
+		"  float2 sk = float2(uv.x, -0.57735027 * uv.x + 1.15470054 * uv.y);\n"
+		"  float2 base = floor(sk);\n"
+		"  float2 f = frac(sk);\n"
+		"  float2 v0, v1, v2; float3 w;\n"
+		"  if (f.x + f.y < 1.0) { v0 = base; v1 = base + float2(1.0,0.0); v2 = base + float2(0.0,1.0); w = float3(1.0 - f.x - f.y, f.x, f.y); }\n"
+		"  else { v0 = base + float2(1.0,1.0); v1 = base + float2(1.0,0.0); v2 = base + float2(0.0,1.0); w = float3(f.x + f.y - 1.0, 1.0 - f.y, 1.0 - f.x); }\n"
+		"  float4 acc = 0.0; float wsum = 0.0;\n"
+		"  [unroll] for (int k = 0; k < 3; k++) {\n"
+		"    float2 vtx = (k == 0) ? v0 : ((k == 1) ? v1 : v2);\n"
+		"    float  wk  = (k == 0) ? w.x : ((k == 1) ? w.y : w.z);\n"
+		"    float2 h = dt_hash(vtx);\n"
+		"    float ang = h.x * 6.2831853;\n"
+		"    float sn = sin(ang), cs = cos(ang);\n"
+		"    float2x2 rot = float2x2(cs, -sn, sn, cs);\n"
+		"    float2 ruv = mul(rot, uv) + h;\n"
+		"    float2 rdx = mul(rot, dx);\n"
+		"    float2 rdy = mul(rot, dy);\n"
+		"    float4 s4 = gTex.SampleGrad(gSmp, ruv, rdx, rdy);\n"
+		"    float ww = pow(max(wk, 0.0), 7.0);\n"
+		"    acc += s4 * ww; wsum += ww;\n"
+		"  }\n"
+		"  float4 hex = acc / max(wsum, 1e-4);\n"
+		"  clip(c0.a - 0.003);\n"
+		"  float4 c = lerp(c0, hex, f_t);\n"
+		"  return c * i.col;\n"
 		"}\n";
 
 	// Bump VS: same screen->clip transform as the main VS, but also carries the per-polygon
@@ -399,6 +451,20 @@ namespace
 		if (FAILED(s_pd3dDevice->CreatePixelShader(p_ps->GetBufferPointer(), p_ps->GetBufferSize(), 0, &s_pPS)))  { Log("TRESPASS_D3D11: CreatePixelShader FAILED\n");  p_ps->Release(); p_vs->Release(); return; }
 		p_ps->Release();
 
+		// Optional hex-tiling PS for wrap batches; non-fatal - fall back to s_pPS if it fails.
+		{
+			ID3DBlob* p_dps = 0; ID3DBlob* p_derr = 0;
+			HRESULT hrd = D3DCompile(k_psz_ps_detile, strlen(k_psz_ps_detile), "psdt", 0, 0, "main", "ps_4_0", 0, 0, &p_dps, &p_derr);
+			if (SUCCEEDED(hrd) && p_dps)
+			{
+				if (FAILED(s_pd3dDevice->CreatePixelShader(p_dps->GetBufferPointer(), p_dps->GetBufferSize(), 0, &s_pDetilePS)))
+					s_pDetilePS = 0;
+				p_dps->Release();
+			}
+			else Log("TRESPASS_D3D11: detile PS compile FAILED (continuing without)\n");
+			if (p_derr) p_derr->Release();
+		}
+
 		D3D11_INPUT_ELEMENT_DESC a_elem[] =
 		{
 			{ "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0,  0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
@@ -593,6 +659,7 @@ namespace
 		if (s_pVB)            { s_pVB->Release();            s_pVB            = 0; }
 		if (s_pLayout)        { s_pLayout->Release();        s_pLayout        = 0; }
 		if (s_pPS)            { s_pPS->Release();            s_pPS            = 0; }
+		if (s_pDetilePS)      { s_pDetilePS->Release();      s_pDetilePS      = 0; }
 		if (s_pVS)            { s_pVS->Release();            s_pVS            = 0; }
 		if (s_pDepthState)    { s_pDepthState->Release();    s_pDepthState    = 0; }
 		if (s_pDSV)           { s_pDSV->Release();           s_pDSV           = 0; }
@@ -935,7 +1002,8 @@ namespace RenderD3D11
 					s_i_bumpdebug = GetEnvironmentVariableA("TRESPASS_BUMPDEBUG", 0, 0) > 0 ? 1 : 0;
 				float* pf = (float*)ms.pData;
 				pf[0] = 2.0f / (float)i_width; pf[1] = 2.0f / (float)i_height;
-				pf[2] = (float)s_i_bumpdebug; pf[3] = 0.0f;
+				if (s_f_detile_strength < 0.0f) { char szdt[32] = {0}; s_f_detile_strength = GetEnvironmentVariableA("TRESPASS_DETILE", szdt, sizeof(szdt)) > 0 ? (float)atof(szdt) : 0.0f; }
+				pf[2] = (float)s_i_bumpdebug; pf[3] = s_f_detile_strength;
 				s_pd3dContext->Unmap(s_pCB, 0);
 			}
 
@@ -1128,11 +1196,16 @@ namespace RenderD3D11
 				s_pd3dContext->VSSetShader(s_pVS, 0, 0);
 				s_pd3dContext->VSSetConstantBuffers(0, 1, &s_pCB);
 				s_pd3dContext->PSSetShader(s_pPS, 0, 0);
+				s_pd3dContext->PSSetConstantBuffers(0, 1, &s_pCB);	// gViewParams.w = detile strength
+				bool b_detile = s_pDetilePS && s_f_detile_strength > 0.0f;
+				ID3D11PixelShader* p_ps_bound = s_pPS;
 
 				for (size_t i = 0; i < s_batches.size(); ++i)
 				{
 					ID3D11SamplerState* p_samp = s_batches[i].b_clamp ? s_pSampClamp : s_pSampWrap;
 					s_pd3dContext->PSSetSamplers(0, 1, &p_samp);
+					ID3D11PixelShader* p_want = (b_detile && !s_batches[i].b_clamp) ? s_pDetilePS : s_pPS;
+					if (p_want != p_ps_bound) { s_pd3dContext->PSSetShader(p_want, 0, 0); p_ps_bound = p_want; }
 					s_pd3dContext->PSSetShaderResources(0, 1, &s_batches[i].pSRV);
 					s_pd3dContext->Draw(s_batches[i].u_count, s_batches[i].u_start);
 				}
