@@ -186,6 +186,26 @@ static bool bCullTexture = false;
 static int s_i_mip_request_budget = 0;
 
 //******************************************************************************************
+// Nudge a texture's sharpest (mip 0) level into the pager for a later frame, when we have
+// to settle for a coarser level now.  Budgeted per pass; RequestMemory only FLAGS the pages
+// (a background thread does the I/O) and is idempotent, so this converges rather than
+// thrashes - once mip 0 is uploaded bTextureKnown short-circuits and this is never hit again.
+static void RequestSharpestMip(const CTexture* ptex)
+{
+	if (s_i_mip_request_budget <= 0)
+		return;
+
+	CRaster* pras_sharp = ptex->prasGetTexture(0).ptGet();
+	if (pras_sharp && pras_sharp->pSurface && pras_sharp->iWidth > 0 &&
+	    !RenderD3D11::bTextureKnown(pras_sharp) &&
+	    !gtxmTexMan.bIsAvailable(pras_sharp->pSurface, pras_sharp->iByteSpan()))
+	{
+		--s_i_mip_request_budget;
+		gtxmTexMan.RequestMemory(pras_sharp->pSurface, pras_sharp->iByteSpan());
+	}
+}
+
+//******************************************************************************************
 //
 static bool bIsScreen565(const CRaster* pras)
 //
@@ -248,7 +268,11 @@ static int iSharpestMipLevel(const CTexture* ptex)
 			// Already uploaded: usable whatever the CPU-side pages are now doing.  A known
 			// key with a null handle failed to upload and never will - skip to the next.
 			if (RenderD3D11::GetTexture(pras))
+			{
+				if (i > 0)
+					RequestSharpestMip(ptex);
 				return i;
+			}
 			continue;
 		}
 
@@ -571,7 +595,7 @@ public:
 				b_mirrored = true;
 
 				// Fresh page-in budget for this pass (see iSharpestMipLevel).
-				s_i_mip_request_budget = 4;
+				s_i_mip_request_budget = 32;
 
 				// Mirror each polygon's screen-space vertices into the D3D11 backend.
 				// Slice 2a: flat-shade in the texture's representative colour
