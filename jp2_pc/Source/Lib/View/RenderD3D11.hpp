@@ -227,6 +227,28 @@ namespace RenderD3D11
 
 	//******************************************************************************************
 	//
+	// STEREO (see RenderVR.hpp).  The engine renders the scene once per eye - the CPU pipeline
+	// bakes the projection in, so each eye is a separate pass - and all those passes accumulate
+	// into the SAME frame here, which is presented once.  SetEye tells the backend which eye's
+	// geometry is arriving so each submitted batch can be tagged; Present then replays each
+	// eye's batches through its own viewport.
+	//
+	// i_eye_count 1 (the default) is the ordinary mono path and behaves exactly as before.
+	// With 2, the window is split side by side, left eye in the left half - which is what makes
+	// the stereo pipeline verifiable on a plain monitor, with no headset and no OpenXR runtime.
+	// Call once per eye, before that eye's geometry is submitted.
+	//
+	// Eye index meaning "this geometry belongs to EVERY eye".  Anything far enough away to have
+	// no measurable stereo parallax - the backdrop, which the engine renders with a 20000-unit
+	// far clip - can be projected once and replayed into both eyes instead of being rendered
+	// twice.  Submitting it under a real eye index instead would draw it into that eye only,
+	// leaving the other eye's distance empty.
+	const int i_EYE_ALL = -1;
+
+	void SetEye(int i_eye, int i_eye_count);
+
+	//******************************************************************************************
+	//
 	// True between bBeginFrame and Present, i.e. a 3D frame's polygons have been accumulated
 	// and are waiting to be presented.  False on a UI-only frame (e.g. the paused in-game
 	// menu, drawn into the software raster), which lets CRasterWin::Flip fall back to the GDI

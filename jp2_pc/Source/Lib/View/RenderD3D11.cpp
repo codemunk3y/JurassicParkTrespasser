@@ -119,9 +119,26 @@ namespace
 	long         s_stat_dev_removed   = 0;	// GetDeviceRemovedReason (0 = ok)
 	int          s_stat_frames        = 0;
 
+	// STEREO: which eye's geometry is currently arriving, and how many eyes this frame has.
+	// Each batch records its eye so Present can replay it through that eye's viewport - the
+	// eyes are separate CPU passes but land in one accumulated frame and one Present.  The
+	// frame size is kept too: bBeginFrame gets it from the caller, and Present needs it again
+	// to lay each eye's viewport out.
+	int   s_i_eye       = 0;
+	int   s_i_eye_count = 1;
+	int   s_i_frame_w   = 0;
+	int   s_i_frame_h   = 0;
+
+	// How many eyes this ACCUMULATED frame turned out to have - the high-water mark of the eye
+	// counts submitted since the last Present, reset when that frame is consumed.  Present must
+	// use this and not s_i_eye_count: the render loop restores the backend to mono after its eye
+	// loop (so later 2D work is not tagged as one eye's), which would otherwise tell Present the
+	// frame had one eye and silently drop the right eye's geometry.
+	int   s_i_frame_eyes = 1;
+
 	// This frame's triangles, expanded from fans, and one draw batch per texture run.
 	std::vector<RenderD3D11::SVert> s_verts;
-	struct SBatch { ID3D11ShaderResourceView* pSRV; UINT u_start; UINT u_count; bool b_clamp; };
+	struct SBatch { ID3D11ShaderResourceView* pSRV; UINT u_start; UINT u_count; bool b_clamp; int i_eye; };
 	std::vector<SBatch> s_batches;
 
 	// CTexture* -> SRV.  Static-world textures are persistent, so a grow-only cache is fine.
@@ -132,7 +149,7 @@ namespace
 
 	// This frame's bump triangles + batches (one per colour+normal+sampler run).
 	std::vector<RenderD3D11::SBumpVert> s_bump_verts;
-	struct SBumpBatch { ID3D11ShaderResourceView* pCol; ID3D11ShaderResourceView* pNrm; UINT u_start; UINT u_count; bool b_clamp; };
+	struct SBumpBatch { ID3D11ShaderResourceView* pCol; ID3D11ShaderResourceView* pNrm; UINT u_start; UINT u_count; bool b_clamp; int i_eye; };
 	std::vector<SBumpBatch> s_bump_batches;
 
 	// Dynamic (terrain) textures: contents change per frame and CTexture objects recycle,
@@ -298,6 +315,50 @@ namespace
 		"}\n";
 
 	inline void Log(const char* psz) { OutputDebugStringA(psz); }
+
+	//******************************************************************************************
+	//
+	// Point the rasteriser at eye i_eye's slice of the back buffer.
+	//
+	// Mono (one eye) is the whole back buffer, as it always was.  Stereo splits it side by
+	// side, one eye per half.  Either way the scene is fitted into its rectangle with its
+	// aspect preserved and centred, so a stereo frame is two undistorted views rather than two
+	// horizontally squashed ones - which matters because the point of the desktop split is to
+	// be able to JUDGE the stereo by eye (a squashed image hides parallax errors in the same
+	// direction the eye is being asked to compare).
+	//
+	// The vertex shader maps screen pixels to clip space against the frame size, so the eye
+	// rectangle is purely a viewport transform - the geometry needs no change.
+	//
+	void SetEyeViewport_(int i_eye)
+	{
+		if (s_i_frame_w < 1 || s_i_frame_h < 1) return;
+
+		const int i_eyes  = s_i_frame_eyes < 1 ? 1 : s_i_frame_eyes;
+		const float f_ew  = (float)s_u_width / (float)i_eyes;		// this eye's slice of the window
+		const float f_ex  = f_ew * (float)i_eye;
+
+		float f_scale = f_ew / (float)s_i_frame_w;
+		float f_sh    = (float)s_u_height / (float)s_i_frame_h;
+		if (f_sh < f_scale) f_scale = f_sh;
+
+		D3D11_VIEWPORT vp;
+		vp.Width    = s_i_frame_w * f_scale;
+		vp.Height   = s_i_frame_h * f_scale;
+		vp.TopLeftX = f_ex + (f_ew - vp.Width) * 0.5f;
+		vp.TopLeftY = (s_u_height - vp.Height) * 0.5f;
+		vp.MinDepth = 0.0f; vp.MaxDepth = 1.0f;
+		s_pd3dContext->RSSetViewports(1, &vp);
+
+		// Remember it: a frame capture must read this sub-rect, not the whole back buffer, or
+		// it picks up the pillar-box bars (see bCaptureBackBuffer565).  Only eye 0 is recorded
+		// - the capture feeds the 2D pause-menu background, which is a single mono image.
+		if (i_eye == 0)
+		{
+			s_vp_x = (UINT)vp.TopLeftX; s_vp_y = (UINT)vp.TopLeftY;
+			s_vp_w = (UINT)vp.Width;    s_vp_h = (UINT)vp.Height;
+		}
+	}
 
 	void Shutdown_Internal();
 
@@ -973,20 +1034,8 @@ namespace RenderD3D11
 			const float af_blend[4] = { 0, 0, 0, 0 };
 			s_pd3dContext->OMSetBlendState(s_pBlend, af_blend, 0xFFFFFFFF);
 
-			float f_scale = (float)s_u_width / (float)i_width;
-			float f_sh    = (float)s_u_height / (float)i_height;
-			if (f_sh < f_scale) f_scale = f_sh;
-
-			D3D11_VIEWPORT vp;
-			vp.Width  = i_width * f_scale; vp.Height = i_height * f_scale;
-			vp.TopLeftX = (s_u_width - vp.Width) * 0.5f; vp.TopLeftY = (s_u_height - vp.Height) * 0.5f;
-			vp.MinDepth = 0.0f; vp.MaxDepth = 1.0f;
-			s_pd3dContext->RSSetViewports(1, &vp);
-
-			// Remember it: a frame capture must read this sub-rect, not the whole back
-			// buffer, or it picks up the pillar-box bars (see bCaptureBackBuffer565).
-			s_vp_x = (UINT)vp.TopLeftX; s_vp_y = (UINT)vp.TopLeftY;
-			s_vp_w = (UINT)vp.Width;    s_vp_h = (UINT)vp.Height;
+			s_i_frame_w = i_width; s_i_frame_h = i_height;
+			SetEyeViewport_(0);
 			s_pd3dContext->RSSetState(s_pRaster);
 
 			const float af_clear[4] = { s_clear_r, s_clear_g, s_clear_b, 1.0f };
@@ -1012,6 +1061,15 @@ namespace RenderD3D11
 		return true;
 	}
 
+	void SetEye(int i_eye, int i_eye_count)
+	{
+		s_i_eye_count = i_eye_count < 1 ? 1 : i_eye_count;
+		s_i_eye       = (i_eye == i_EYE_ALL) ? i_EYE_ALL
+		              : (i_eye < 0 ? 0 : (i_eye >= s_i_eye_count ? s_i_eye_count - 1 : i_eye));
+		if (s_i_eye_count > s_i_frame_eyes)
+			s_i_frame_eyes = s_i_eye_count;
+	}
+
 	void SubmitPolygon(const SVert* pav_verts, int i_count, void* p_texture, bool b_clamp)
 	{
 		if (i_count < 3) return;
@@ -1028,12 +1086,16 @@ namespace RenderD3D11
 		UINT u_added = (UINT)s_verts.size() - u_before;
 		if (!u_added) return;
 
-		// Extend the current batch if it uses the same texture+sampler, else start a new one.
-		if (!s_batches.empty() && s_batches.back().pSRV == p_srv && s_batches.back().b_clamp == b_clamp)
+		// Extend the current batch if it uses the same texture+sampler AND belongs to the same
+		// eye, else start a new one.  Merging across eyes would draw one eye's triangles into
+		// the other's viewport, since the viewport is set per eye at draw time.
+		if (!s_batches.empty() && s_batches.back().pSRV == p_srv &&
+		    s_batches.back().b_clamp == b_clamp && s_batches.back().i_eye == s_i_eye)
 			s_batches.back().u_count += u_added;
 		else
 		{
 			SBatch b; b.pSRV = p_srv; b.u_start = u_before; b.u_count = u_added; b.b_clamp = b_clamp;
+			b.i_eye = s_i_eye;
 			s_batches.push_back(b);
 		}
 	}
@@ -1056,11 +1118,13 @@ namespace RenderD3D11
 		if (!u_added) return;
 
 		if (!s_bump_batches.empty() && s_bump_batches.back().pCol == p_col &&
-		    s_bump_batches.back().pNrm == p_nrm && s_bump_batches.back().b_clamp == b_clamp)
+		    s_bump_batches.back().pNrm == p_nrm && s_bump_batches.back().b_clamp == b_clamp &&
+		    s_bump_batches.back().i_eye == s_i_eye)
 			s_bump_batches.back().u_count += u_added;
 		else
 		{
 			SBumpBatch b; b.pCol = p_col; b.pNrm = p_nrm; b.u_start = u_before; b.u_count = u_added; b.b_clamp = b_clamp;
+			b.i_eye = s_i_eye;
 			s_bump_batches.push_back(b);
 		}
 	}
@@ -1164,31 +1228,60 @@ namespace RenderD3D11
 		// leave the last frame on screen rather than showing an uncleared/garbage backbuffer.
 		if (!s_frame_open) return;
 
-		// Sky pass first, behind everything (no depth test/write): a 1:1 blit of the software
-		// sky image captured this frame.  Geometry draws over it.
-		if (s_sky_valid && s_pSkyVS && s_pSkyPS && s_pSkyDepthState && s_pSkyImgSRV)
+		// Upload this frame's geometry ONCE, before any drawing.  In stereo both eyes' triangles
+		// sit in these same buffers (each batch carries the eye it belongs to), so the eye loop
+		// below replays them rather than re-uploading per eye - the vertices are already in the
+		// right place, only the viewport differs.
+		D3D11_MAPPED_SUBRESOURCE ms;
+		bool b_have_main = !s_verts.empty() && bEnsureVB((UINT)s_verts.size()) &&
+			SUCCEEDED(s_pd3dContext->Map(s_pVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms));
+		if (b_have_main)
 		{
-			s_pd3dContext->OMSetDepthStencilState(s_pSkyDepthState, 0);
-			s_pd3dContext->IASetInputLayout(0);
-			ID3D11Buffer* p_novb = 0; UINT u_z0 = 0, u_z1 = 0;
-			s_pd3dContext->IASetVertexBuffers(0, 1, &p_novb, &u_z0, &u_z1);
-			s_pd3dContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-			s_pd3dContext->VSSetShader(s_pSkyVS, 0, 0);
-			s_pd3dContext->PSSetShader(s_pSkyPS, 0, 0);
-			s_pd3dContext->PSSetSamplers(0, 1, &s_pSampClamp);
-			s_pd3dContext->PSSetShaderResources(0, 1, &s_pSkyImgSRV);
-			s_pd3dContext->Draw(3, 0);
-			s_pd3dContext->OMSetDepthStencilState(s_pDepthState, 0);	// restore for geometry
+			memcpy(ms.pData, &s_verts[0], s_verts.size() * sizeof(SVert));
+			s_pd3dContext->Unmap(s_pVB, 0);
 		}
 
-		if (!s_verts.empty() && bEnsureVB((UINT)s_verts.size()))
+		bool b_have_bump = !s_bump_verts.empty() && s_pBumpVS && s_pBumpLayout &&
+			bEnsureBumpVB((UINT)s_bump_verts.size()) &&
+			SUCCEEDED(s_pd3dContext->Map(s_pBumpVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms));
+		if (b_have_bump)
 		{
-			D3D11_MAPPED_SUBRESOURCE ms;
-			if (SUCCEEDED(s_pd3dContext->Map(s_pVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms)))
-			{
-				memcpy(ms.pData, &s_verts[0], s_verts.size() * sizeof(SVert));
-				s_pd3dContext->Unmap(s_pVB, 0);
+			memcpy(ms.pData, &s_bump_verts[0], s_bump_verts.size() * sizeof(SBumpVert));
+			s_pd3dContext->Unmap(s_pBumpVB, 0);
+		}
 
+		const bool b_detile = s_pDetilePS && s_f_detile_strength > 0.0f;
+		const int  i_eyes   = s_i_frame_eyes < 1 ? 1 : s_i_frame_eyes;
+
+		// One pass per eye.  Mono (i_eyes == 1) runs the body exactly once, over the whole back
+		// buffer, which is the path this always took.
+		for (int i_eye = 0; i_eye < i_eyes; ++i_eye)
+		{
+			if (i_eyes > 1)
+				SetEyeViewport_(i_eye);
+
+			// Sky pass first, behind everything (no depth test/write): a 1:1 blit of the
+			// software sky image captured this frame.  Geometry draws over it.  It is drawn per
+			// eye because it fills whatever viewport is current, and each eye is a different
+			// rectangle.  The image itself is the same for both - the sky is at effective
+			// infinity, so it has no stereo parallax to lose.
+			if (s_sky_valid && s_pSkyVS && s_pSkyPS && s_pSkyDepthState && s_pSkyImgSRV)
+			{
+				s_pd3dContext->OMSetDepthStencilState(s_pSkyDepthState, 0);
+				s_pd3dContext->IASetInputLayout(0);
+				ID3D11Buffer* p_novb = 0; UINT u_z0 = 0, u_z1 = 0;
+				s_pd3dContext->IASetVertexBuffers(0, 1, &p_novb, &u_z0, &u_z1);
+				s_pd3dContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+				s_pd3dContext->VSSetShader(s_pSkyVS, 0, 0);
+				s_pd3dContext->PSSetShader(s_pSkyPS, 0, 0);
+				s_pd3dContext->PSSetSamplers(0, 1, &s_pSampClamp);
+				s_pd3dContext->PSSetShaderResources(0, 1, &s_pSkyImgSRV);
+				s_pd3dContext->Draw(3, 0);
+				s_pd3dContext->OMSetDepthStencilState(s_pDepthState, 0);	// restore for geometry
+			}
+
+			if (b_have_main)
+			{
 				UINT u_stride = sizeof(SVert), u_offset = 0;
 				s_pd3dContext->IASetInputLayout(s_pLayout);
 				s_pd3dContext->IASetVertexBuffers(0, 1, &s_pVB, &u_stride, &u_offset);
@@ -1197,11 +1290,11 @@ namespace RenderD3D11
 				s_pd3dContext->VSSetConstantBuffers(0, 1, &s_pCB);
 				s_pd3dContext->PSSetShader(s_pPS, 0, 0);
 				s_pd3dContext->PSSetConstantBuffers(0, 1, &s_pCB);	// gViewParams.w = detile strength
-				bool b_detile = s_pDetilePS && s_f_detile_strength > 0.0f;
 				ID3D11PixelShader* p_ps_bound = s_pPS;
 
 				for (size_t i = 0; i < s_batches.size(); ++i)
 				{
+					if (s_batches[i].i_eye != i_eye && s_batches[i].i_eye != i_EYE_ALL) continue;
 					ID3D11SamplerState* p_samp = s_batches[i].b_clamp ? s_pSampClamp : s_pSampWrap;
 					s_pd3dContext->PSSetSamplers(0, 1, &p_samp);
 					ID3D11PixelShader* p_want = (b_detile && !s_batches[i].b_clamp) ? s_pDetilePS : s_pPS;
@@ -1210,18 +1303,11 @@ namespace RenderD3D11
 					s_pd3dContext->Draw(s_batches[i].u_count, s_batches[i].u_start);
 				}
 			}
-		}
 
-		// Bump pass: object-space normal mapping.  Opaque/cutout (the PS clips holes) and the
-		// depth buffer resolves ordering, so drawing after the main batches is fine.
-		if (!s_bump_verts.empty() && s_pBumpVS && s_pBumpLayout && bEnsureBumpVB((UINT)s_bump_verts.size()))
-		{
-			D3D11_MAPPED_SUBRESOURCE ms;
-			if (SUCCEEDED(s_pd3dContext->Map(s_pBumpVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms)))
+			// Bump pass: object-space normal mapping.  Opaque/cutout (the PS clips holes) and
+			// the depth buffer resolves ordering, so drawing after the main batches is fine.
+			if (b_have_bump)
 			{
-				memcpy(ms.pData, &s_bump_verts[0], s_bump_verts.size() * sizeof(SBumpVert));
-				s_pd3dContext->Unmap(s_pBumpVB, 0);
-
 				UINT u_stride = sizeof(SBumpVert), u_offset = 0;
 				s_pd3dContext->IASetInputLayout(s_pBumpLayout);
 				s_pd3dContext->IASetVertexBuffers(0, 1, &s_pBumpVB, &u_stride, &u_offset);
@@ -1233,6 +1319,7 @@ namespace RenderD3D11
 
 				for (size_t i = 0; i < s_bump_batches.size(); ++i)
 				{
+					if (s_bump_batches[i].i_eye != i_eye && s_bump_batches[i].i_eye != i_EYE_ALL) continue;
 					ID3D11SamplerState* p_samp = s_bump_batches[i].b_clamp ? s_pSampClamp : s_pSampWrap;
 					s_pd3dContext->PSSetSamplers(0, 1, &p_samp);
 					ID3D11ShaderResourceView* ap_srv[2] = { s_bump_batches[i].pCol, s_bump_batches[i].pNrm };
@@ -1248,8 +1335,9 @@ namespace RenderD3D11
 		CaptureFrame_();
 
 		HRESULT hr_present = s_pSwapChain->Present(0, 0);
-		s_frame_open = false;			// frame consumed; next bBeginFrame starts a fresh one
-		s_sky_valid  = false;			// require SetSkyImage again next frame (else no sky)
+		s_frame_open   = false;			// frame consumed; next bBeginFrame starts a fresh one
+		s_sky_valid    = false;			// require SetSkyImage again next frame (else no sky)
+		s_i_frame_eyes = 1;				// next frame re-declares its eye count via SetEye
 
 		// ---- Diagnostic: peak vertex/upload counts + device-removed state -------------------
 		if ((unsigned int)s_verts.size()      > s_stat_max_verts)     s_stat_max_verts     = (unsigned int)s_verts.size();

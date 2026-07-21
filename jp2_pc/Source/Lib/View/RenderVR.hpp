@@ -75,6 +75,54 @@ namespace RenderVR
 
 	//******************************************************************************************
 	//
+	// STEREO (M3).
+	//
+	// Because the D3D11 path is handed geometry that is ALREADY projected to 2D screen space,
+	// a second eye cannot come from a shader matrix - the 3D information is gone by then.  The
+	// only way to get one is to run the engine's CPU pipeline again with the camera moved to
+	// the other eye.  So the renderer loop asks iEyeCount() how many passes to make, calls
+	// SetEye() before each, and everything downstream (the camera offset here, the render
+	// target in RenderD3D11) keys off that.
+	//
+	// This is deliberately INDEPENDENT of bEnabled()/bInit(): stereo is driven by its own
+	// TRESPASS_VR_STEREO environment variable so that the whole per-eye path can be developed
+	// and verified on an ordinary desktop, side by side in the game window, with no headset and
+	// no OpenXR runtime installed at all.  When the OpenXR session lands (M2/M4) the same
+	// switch flips on automatically and the offsets below come from the runtime's real view
+	// poses instead of the fixed IPD.
+	//
+	// TRESPASS_VR_STEREO may optionally be set to the desired interpupillary distance in
+	// MILLIMETRES (e.g. "64"); unset or unparseable means the 63mm adult average.
+	//
+	bool bStereoActive();
+
+	//******************************************************************************************
+	//
+	// Number of camera passes the renderer must make this frame: 2 when stereo is active, 1
+	// otherwise.  A non-stereo build/run therefore takes exactly the path it always did.
+	//
+	int  iEyeCount();
+
+	//******************************************************************************************
+	//
+	// Select the eye about to be rendered (0 = left, 1 = right).  Set by the render loop before
+	// each camera pass; read by the camera offset and by the render backend when it decides
+	// which target/viewport the pass lands in.
+	//
+	void SetEye(int i_eye);
+	int  iEye();
+
+	//******************************************************************************************
+	//
+	// Lateral offset of eye i_eye from the head centre, in world units along the camera's LOCAL
+	// X (right) axis - negative for the left eye, positive for the right.  Trespasser's world
+	// unit is the metre (its gravity constant is 9.8), so this is a true physical IPD/2 with no
+	// scale conversion.  Zero when stereo is inactive.
+	//
+	float fEyeOffsetX(int i_eye);
+
+	//******************************************************************************************
+	//
 	// Release all OpenXR objects and free the loader.  Safe to call when never initialised.
 	//
 	void Shutdown();

@@ -20,6 +20,8 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 // The OpenXR platform header exposes the D3D11 graphics-binding + requirements types only when
 // these are defined ahead of it, and it needs <d3d11.h> (above) already included.
@@ -29,6 +31,7 @@
 #include "openxr/openxr_platform.h"
 
 #include "RenderVR.hpp"
+#include "RenderD3D11.hpp"
 
 namespace
 {
@@ -45,6 +48,11 @@ namespace
 
 	int         s_eye_w       = 0;
 	int         s_eye_h       = 0;
+
+	// ---- Stereo (M3) ---------------------------------------------------------------------
+	int         s_i_stereo    = -1;		// -1 = TRESPASS_VR_STEREO not yet read
+	int         s_i_eye       = 0;		// eye currently being rendered (0 = left, 1 = right)
+	float       s_f_half_ipd  = 0.0f;	// half the interpupillary distance, in metres
 
 	// The one function fetched from the DLL by name; every other entry point comes from it.
 	PFN_xrGetInstanceProcAddr           s_xrGetInstanceProcAddr = 0;
@@ -101,6 +109,53 @@ namespace RenderVR
 
 	int  iRecommendedEyeWidth()  { return s_eye_w; }
 	int  iRecommendedEyeHeight() { return s_eye_h; }
+
+	bool bStereoActive()
+	{
+		if (s_i_stereo < 0)
+		{
+			char ach[32] = { 0 };
+			int  i_len = GetEnvironmentVariableA("TRESPASS_VR_STEREO", ach, sizeof(ach));
+			s_i_stereo = i_len > 0 ? 1 : 0;
+			if (s_i_stereo)
+			{
+				// Optional value = interpupillary distance in millimetres.  Anything outside a
+				// plausible human range (40..80mm) is treated as "not specified" rather than
+				// obeyed - a typo there would otherwise produce a wildly wrong stereo effect
+				// that looks like a bug in the projection rather than a bad input.
+				int i_ipd_mm = atoi(ach);
+				if (i_ipd_mm < 40 || i_ipd_mm > 80)
+					i_ipd_mm = 63;			// adult average
+				s_f_half_ipd = (float)i_ipd_mm * 0.0005f;	// mm -> metres, halved
+
+				char buf[128];
+				sprintf(buf, "TRESPASS_VR: stereo ON, IPD %dmm (half-offset %.4f world units)\n",
+					i_ipd_mm, s_f_half_ipd);
+				Log(buf);
+			}
+		}
+		if (!s_i_stereo)
+			return false;
+
+		// Stereo needs the D3D11 backend.  It is the only path that can keep the two eyes
+		// apart: it tags each submitted batch with its eye and gives each one its own viewport.
+		// The software rasteriser has a single screen raster, so a second pass would simply
+		// overpaint the first and the result would be one eye's view with the other's smeared
+		// through it.  Checked live rather than cached - the device is created lazily on the
+		// first frame, so an early call must not latch stereo off for the whole run.
+		return RenderD3D11::bActive();
+	}
+
+	int  iEyeCount() { return bStereoActive() ? 2 : 1; }
+
+	void SetEye(int i_eye) { s_i_eye = (i_eye == 1) ? 1 : 0; }
+	int  iEye()            { return s_i_eye; }
+
+	float fEyeOffsetX(int i_eye)
+	{
+		if (!bStereoActive()) return 0.0f;
+		return (i_eye == 1) ? s_f_half_ipd : -s_f_half_ipd;
+	}
 
 	bool bInit()
 	{

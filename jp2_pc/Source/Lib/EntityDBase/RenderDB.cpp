@@ -55,6 +55,8 @@
 #include "Lib/Renderer/Sky.hpp"
 #include "Lib/Sys/LRU.hpp"
 #include "Lib/View/AGPTextureMemManager.hpp"
+#include "Lib/View/RenderD3D11.hpp"
+#include "Lib/View/RenderVR.hpp"
 #include "Lib/EntityDBase/QualitySettings.hpp"
 #include "Lib/View/Direct3DRenderState.hpp"
 #include "Lib/Renderer/ScreenRenderAuxD3D.hpp"
@@ -157,6 +159,14 @@ static rptr<CLightAmbient>	pamb;
 		// Render the backdrop.
 		//
 		{
+			// In stereo, the backdrop is rendered ONCE and replayed into both eyes rather than
+			// projected per eye.  Its far clip is 20000 units against an interpupillary distance
+			// of six centimetres, so the parallax between the eyes is far below one pixel - a
+			// second pass would cost a full extra scene render to produce an identical image.
+			// (Submitting it under a real eye index instead would put the whole distance in one
+			// eye and leave the other's empty.)
+			RenderD3D11::SetEye(RenderD3D11::i_EYE_ALL, RenderVR::iEyeCount());
+
 			// Create a camera with a much farther clipping plane.
 			CCamera::SProperties camprop = wqcam.tGet()->campropGetProperties();
 			camprop.rFarClipPlaneDist = 20000.0f;
@@ -269,30 +279,68 @@ static rptr<CLightAmbient>	pamb;
 		wDBase.Lock();
 
 		{
-			CCamera::SProperties camprop = wqcam.tGet()->campropGetProperties();
-			CCamera cam(wqcam.tGet()->pr3VPresence(), camprop);
+			// STEREO (see RenderVR.hpp).  The renderer's GPU path is handed geometry that this
+			// CPU pipeline has ALREADY projected to 2D screen space, so a second eye cannot be
+			// produced downstream - by the time the polygons reach the GPU the depth information
+			// they were projected from is gone.  The only way to get one is to project the world
+			// again from the other eye, which is what this loop does: the whole main-scene render
+			// runs once per eye, with the camera shifted along its own X (right) axis by half the
+			// interpupillary distance.  Trespasser's world unit is the metre, so that shift is a
+			// true physical IPD with no scale conversion.
+			//
+			// Only the render repeats.  The occlusion list and terrain update above are built
+			// once, from the head-centre camera, and shared by both eyes: rebuilding them per eye
+			// would double the most expensive part of the frame to account for a few centimetres
+			// of parallax.  Culling from the centre is very slightly conservative at the extreme
+			// left and right edges, which is the standard trade and is invisible in practice.
+			const int i_eyes = RenderVR::iEyeCount();
 
-			// Toggle the clear off.
-			CScreenRender::SSettings screnset = *msgpaint.renContext.pScreenRender->pSettings;
-			msgpaint.renContext.pScreenRender->pSettings->bClearBackground = false;
-			msgpaint.renContext.pScreenRender->pSettings->bDrawSky         = false;
+			for (int i_eye = 0; i_eye < i_eyes; ++i_eye)
+			{
+				// Tell the backend which eye's geometry is about to arrive, so it can tag the
+				// batches and later replay each eye through its own viewport/target.
+				RenderVR::SetEye(i_eye);
+				RenderD3D11::SetEye(i_eye, i_eyes);
 
-			// Get the lights whose influence intersects the camera's bounding volume.
-			CWDbQueryLights wqlt(&cam, wDBase);
+				CCamera::SProperties camprop = wqcam.tGet()->campropGetProperties();
+				CPresence3<> pr3_eye = wqcam.tGet()->pr3VPresence();
 
-			// Render the main scene.
-			msgpaint.renContext.RenderScene
-			(
-				cam,
-				wqlt,
-				wDBase.ppartPartitionList(),
-				papoc,
-				esfINTERSECT,
-				(bRenderTerrain) ? (wqtmsh.tGet()) : (0)
-			);
+				// Offset along the camera's LOCAL right axis, so the eyes separate across the
+				// view however the head is turned or pitched.  Camera space here is X = right,
+				// Y = forward, Z = up (see the view-normalising transform in CCamera).
+				float f_offset = RenderVR::fEyeOffsetX(i_eye);
+				if (f_offset != 0.0f)
+					pr3_eye.v3Pos += CVector3<>(f_offset, 0, 0) * pr3_eye.r3Rot;
 
-			// Reset the clear.
-			*msgpaint.renContext.pScreenRender->pSettings = screnset;
+				CCamera cam(pr3_eye, camprop);
+
+				// Toggle the clear off.
+				CScreenRender::SSettings screnset = *msgpaint.renContext.pScreenRender->pSettings;
+				msgpaint.renContext.pScreenRender->pSettings->bClearBackground = false;
+				msgpaint.renContext.pScreenRender->pSettings->bDrawSky         = false;
+
+				// Get the lights whose influence intersects the camera's bounding volume.
+				CWDbQueryLights wqlt(&cam, wDBase);
+
+				// Render the main scene.
+				msgpaint.renContext.RenderScene
+				(
+					cam,
+					wqlt,
+					wDBase.ppartPartitionList(),
+					papoc,
+					esfINTERSECT,
+					(bRenderTerrain) ? (wqtmsh.tGet()) : (0)
+				);
+
+				// Reset the clear.
+				*msgpaint.renContext.pScreenRender->pSettings = screnset;
+			}
+
+			// Leave the backend back in its mono state, so anything drawn outside the eye loop
+			// (2D overlays, the next frame's early passes) is not tagged as the last eye's.
+			RenderVR::SetEye(0);
+			RenderD3D11::SetEye(0, 1);
 		}
 	
 		wDBase.Unlock();
