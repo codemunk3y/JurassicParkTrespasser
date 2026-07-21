@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive. 1996
+ * Copyright (c) DreamWorks Interactive. 1996
  *
  * Contents: Classes used for pointer wrapping, including reference counting pointers.
  *

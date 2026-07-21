@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive. 1996
+ * Copyright (c) DreamWorks Interactive. 1996
  *
  * Contents:
  *		Filter templates for accessing types of pointers to objects in heterogenous stl

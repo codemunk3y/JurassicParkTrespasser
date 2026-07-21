@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive. 1996
+ * Copyright (c) DreamWorks Interactive. 1996
  *
  * Contents:
  *		CSynthesizer class for AI library.  CSynthesizer combines all sub-brain inputs into 

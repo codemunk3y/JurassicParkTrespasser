@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive. 1996
+ * Copyright (c) DreamWorks Interactive. 1996
  *
  * Contents:
  *		A fast approximation for floating point division (through inversion). A lookup table for

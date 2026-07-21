@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive. 1996
+ * Copyright (c) DreamWorks Interactive. 1996
  *
  * Contents:
  *	CThinker class for AI library.  CThinker handles all processing for a dino

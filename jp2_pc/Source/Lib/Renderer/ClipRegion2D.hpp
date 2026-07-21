@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive. 1997
+ * Copyright (c) DreamWorks Interactive. 1997
  *
  * Contents:
  *		Definition of a closed convex polygonal clipping region in the XY plane.

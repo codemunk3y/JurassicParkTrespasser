@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive. 1996
+ * Copyright (c) DreamWorks Interactive. 1996
  *
  * Contents:
  *		Definition of a 3D plane.  For uses of planes in clipping, see Renderer/Clip.hpp.

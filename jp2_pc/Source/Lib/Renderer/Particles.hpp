@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive, 1998.
+ * Copyright (c) DreamWorks Interactive, 1998.
  *
  * A particle system for blood and so on.
  *

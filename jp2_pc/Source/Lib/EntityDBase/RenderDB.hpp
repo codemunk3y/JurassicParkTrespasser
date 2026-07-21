@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive. 1997
+ * Copyright (c) DreamWorks Interactive. 1997
  *
  * Contents:
  *		Subsystem responsible for rendering the contents of the world database.

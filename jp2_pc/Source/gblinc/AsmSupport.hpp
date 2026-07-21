@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive. 1997
+ * Copyright (c) DreamWorks Interactive. 1997
  *
  * Contents:
  *			Assembler instruction macros for instructions that the compiler does not have

@@ -1,7 +1,7 @@
 /***********************************************************************************************
  *
  * $Source::																				   $	
- * Copyright © DreamWorks Interactive. 1996
+ * Copyright (c) DreamWorks Interactive. 1996
  *
  * Contents:
  *		The AI classes.  This header file should be the first AI-specific header included by 

@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive, 1998.
+ * Copyright (c) DreamWorks Interactive, 1998.
  *
  * Contents:
  *		ImageLoader is responsible for relocating all objects as they are loaded and for getting

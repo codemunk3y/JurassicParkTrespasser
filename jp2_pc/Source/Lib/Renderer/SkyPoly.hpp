@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive, 1998.
+ * Copyright (c) DreamWorks Interactive, 1998.
  *
  * Contents:
  *		Structures and code for supporting the sky as a polygon.

@@ -1,6 +1,6 @@
 /**********************************************************************************************
  *
- * Copyright © DreamWorks Interactive, 1997
+ * Copyright (c) DreamWorks Interactive, 1997
  *
  * Contents:
  *		Class types for building optimal spatial partitions. All classes defined inherit from

@@ -1,6 +1,6 @@
 /**********************************************************************************************
  *
- * Copyright © DreamWorks Interactive, 1996
+ * Copyright (c) DreamWorks Interactive, 1996
  *
  * Contents:
  *		Defines class CRenderShell. CRenderShell encapsulates the basic functionality of the Lost World

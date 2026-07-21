@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive, 1997.
+ * Copyright (c) DreamWorks Interactive, 1997.
  *
  * Functions for using composite rasters, e.g., rasters with interlaced palette index values
  * and lighting values.

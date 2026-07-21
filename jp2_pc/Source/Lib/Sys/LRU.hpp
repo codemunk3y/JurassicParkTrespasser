@@ -1,6 +1,6 @@
 /**********************************************************************************************
  *
- * Copyright © DreamWorks Interactive, 1998.
+ * Copyright (c) DreamWorks Interactive, 1998.
  *
  * Contents:   Schedules operations based on priorities and time slices available.
  *

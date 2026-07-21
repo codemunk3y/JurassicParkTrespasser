@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive. 1998
+ * Copyright (c) DreamWorks Interactive. 1998
  *
  * Contents:
  *			CFileMapping, Win32 memory mapped files.

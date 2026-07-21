@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive. 1996
+ * Copyright (c) DreamWorks Interactive. 1996
  *
  * Example file for CScreenRender driver.  Change the word "Example" to a descriptive term for
  * your driver, and fill in the appropriate function bodies.

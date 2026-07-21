@@ -1,6 +1,6 @@
 /**********************************************************************************************
  *
- * Copyright © DreamWorks Interactive, 1996
+ * Copyright (c) DreamWorks Interactive, 1996
  *
  * Contents:
  *		Save class for Trespasser CInstances (could be a CSaveable at some point).

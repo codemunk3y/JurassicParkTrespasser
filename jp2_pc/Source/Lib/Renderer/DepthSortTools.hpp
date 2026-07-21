@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive, 1997.
+ * Copyright (c) DreamWorks Interactive, 1997.
  *
  * Contents:
  *		Tools to assist in the debugging of the depth sort routine.

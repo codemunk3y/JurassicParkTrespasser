@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive, 1997.
+ * Copyright (c) DreamWorks Interactive, 1997.
  *
  * Contents:
  *		Fixed size heap object that provides better performance than the Windows heap.

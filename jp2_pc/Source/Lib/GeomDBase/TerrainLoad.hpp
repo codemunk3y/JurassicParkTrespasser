@@ -1,6 +1,6 @@
 /***********************************************************************************************
  *
- * Copyright © DreamWorks Interactive, 1997.
+ * Copyright (c) DreamWorks Interactive, 1997.
  *
  * Contents:
  *		Classes and functions for loading exported terrain data.

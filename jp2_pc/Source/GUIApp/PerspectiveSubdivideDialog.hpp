@@ -1,6 +1,6 @@
 /**********************************************************************************************
  *
- * Copyright © DreamWorks Interactive, 1997
+ * Copyright (c) DreamWorks Interactive, 1997
  *
  * Contents:
  *		Dialog box for examining and changing parameters for perspective correction using

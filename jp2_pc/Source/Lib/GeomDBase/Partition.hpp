@@ -1,6 +1,6 @@
 /**********************************************************************************************
  *
- * Copyright © DreamWorks Interactive, 1997
+ * Copyright (c) DreamWorks Interactive, 1997
  *
  * Contents:
  *		The base class of any spatial object in the world database:

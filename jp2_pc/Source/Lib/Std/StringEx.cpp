@@ -1,6 +1,6 @@
 /****************************************************************************************
  *
- * Copyright © DreamWorks Interactive, 1996
+ * Copyright (c) DreamWorks Interactive, 1996
  *
  * Contents:   Extended string manipulations. Module contains functionality not found
  *             within <stdlib.h>.

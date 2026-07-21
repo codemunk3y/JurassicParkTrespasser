@@ -1,6 +1,6 @@
 /**********************************************************************************************
  *
- * Copyright © DreamWorks Interactive, 1997
+ * Copyright (c) DreamWorks Interactive, 1997
  *
  * Contents:
  *		The data daemon class, used to keep the right bits of data in memory at the right times.
