@@ -123,6 +123,56 @@ namespace RenderVR
 
 	//******************************************************************************************
 	//
+	// SESSION + FRAME LOOP (M2).
+	//
+	// FrameBegin is called once at the top of each rendered frame, before the engine paints.
+	// It lazily creates the session (which cannot happen until RenderD3D11 has a device - that
+	// is built on the first frame, so this cannot be done in bInit), pumps the OpenXR event
+	// queue and drives the session state machine, then, if a frame is ready, does xrBeginFrame
+	// and locates the eye views for it.
+	//
+	// IT NEVER BLOCKS.  The blocking part of the OpenXR frame loop - xrWaitFrame, which is how a
+	// VR app is paced to the headset's refresh rate - runs on a dedicated thread inside this
+	// module, because the engine calls this from the WINDOWS MESSAGE-PUMP THREAD and a runtime
+	// that stops issuing frames would otherwise stop the pump and hang the game.  When no frame
+	// is ready this simply returns and the pass does not go to the headset.
+	//
+	void FrameBegin();
+
+	//******************************************************************************************
+	//
+	// SubmitFrame is called at the end of the frame, BEFORE RenderD3D11::Present consumes it -
+	// the eye images are drawn from the same accumulated geometry the desktop mirror uses, and
+	// Present is what throws that away.
+	//
+	// It acquires each eye's swapchain image, renders that eye into it, releases it, and hands
+	// the runtime a projection layer via xrEndFrame.  Every frame that began MUST be ended,
+	// even one with nothing to draw, or the runtime's frame pipeline stalls - so this still
+	// calls xrEndFrame (with no layers) when the session is not currently visible.
+	//
+	void SubmitFrame();
+
+	//******************************************************************************************
+	//
+	// True once the session is running and frames are being submitted to the runtime.  This is
+	// what makes stereo engage automatically when a headset session comes up, without the
+	// TRESPASS_VR_STEREO override.
+	//
+	bool bSessionRunning();
+
+	//******************************************************************************************
+	//
+	// Append a line to trespass_render.log (next to the exe) and to the debugger.
+	//
+	// Exposed because the engine's own dprintf is compiled to an empty inline in release builds
+	// and OutputDebugString needs a debugger attached, so both of the obvious ways to leave a
+	// diagnostic breadcrumb in this codebase are silently discarded in exactly the build being
+	// tested.  This one always writes.
+	//
+	void LogLine(const char* psz);
+
+	//******************************************************************************************
+	//
 	// Release all OpenXR objects and free the loader.  Safe to call when never initialised.
 	//
 	void Shutdown();

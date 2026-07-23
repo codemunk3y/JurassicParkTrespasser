@@ -34,6 +34,11 @@
 namespace
 {
 	// ---- Device / swap chain ------------------------------------------------------------
+	// VR: the adapter the OpenXR runtime requires, if it has told us one (see
+	// SetRequiredAdapterLuid).  Zeroed = "no constraint", use the default adapter.
+	LUID                     s_required_luid  = { 0, 0 };
+	bool                     s_b_luid_set     = false;
+
 	HWND                     s_hwnd           = 0;
 	ID3D11Device*            s_pd3dDevice     = 0;
 	ID3D11DeviceContext*     s_pd3dContext    = 0;
@@ -135,6 +140,24 @@ namespace
 	// loop (so later 2D work is not tagged as one eye's), which would otherwise tell Present the
 	// frame had one eye and silently drop the right eye's geometry.
 	int   s_i_frame_eyes = 1;
+
+	// Geometry upload state, valid for the current frame only.  The frame may be drawn several
+	// times (each VR eye image, then the desktop mirror) but is uploaded once - see
+	// EnsureGeometryUploaded_.
+	bool  s_b_frame_uploaded = false;
+	bool  s_b_have_main      = false;
+	bool  s_b_have_bump      = false;
+
+	// VR eye render targets, cached per swapchain image.  An OpenXR swapchain cycles through a
+	// small fixed set of textures, so the views are built once on first sight and reused rather
+	// than recreated every frame.  The depth buffer is shared by size: the eyes are the same
+	// size as each other and are drawn one after another, so one is enough.
+	struct SEyeTarget { ID3D11Texture2D* pTex; ID3D11RenderTargetView* pRTV; };
+	std::vector<SEyeTarget>  s_eye_targets;
+	ID3D11Texture2D*         s_pEyeDepthTex = 0;
+	ID3D11DepthStencilView*  s_pEyeDSV      = 0;
+	int                      s_eye_depth_w  = 0;
+	int                      s_eye_depth_h  = 0;
 
 	// This frame's triangles, expanded from fans, and one draw batch per texture run.
 	std::vector<RenderD3D11::SVert> s_verts;
@@ -314,7 +337,28 @@ namespace
 		"  return float4(gSkyTex.Sample(gSmp, i.uv).rgb, 1.0);\n"
 		"}\n";
 
-	inline void Log(const char* psz) { OutputDebugStringA(psz); }
+	// Log to trespass_render.log (next to the exe) as well as the debugger.  OutputDebugString
+	// alone is invisible unless a debugger or DebugView is attached at the time, which made
+	// "did the backend actually start?" unanswerable from a finished run.  Appends - the VR
+	// layer writes to the same file, and the launcher clears it before each run.  See the fuller
+	// note on the matching function in RenderVR.cpp.
+	void Log(const char* psz)
+	{
+		OutputDebugStringA(psz);
+
+		// Resolved from the EXE's location: the engine calls SetCurrentDirectory at startup, so
+		// a relative name lands in the game data folder instead (see RenderVR.cpp's copy).
+		static char s_ach_path[MAX_PATH] = { 0 };
+		if (!s_ach_path[0])
+		{
+			GetModuleFileNameA(0, s_ach_path, MAX_PATH);
+			char* psz_slash = strrchr(s_ach_path, '\\');
+			if (psz_slash) strcpy(psz_slash + 1, "trespass_render.log");
+			else           strcpy(s_ach_path, "trespass_render.log");
+		}
+		FILE* pf = fopen(s_ach_path, "a");
+		if (pf) { fputs(psz, pf); fclose(pf); }
+	}
 
 	//******************************************************************************************
 	//
@@ -384,10 +428,40 @@ namespace
 
 		D3D_FEATURE_LEVEL fl_got;
 		const D3D_FEATURE_LEVEL afl[] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0 };
+
+		// If an OpenXR runtime told us which GPU the headset is on, find that adapter and build
+		// the device on it - xrCreateSession rejects a device on any other one.  With an
+		// explicit adapter the driver type MUST be UNKNOWN (D3D11 rejects HARDWARE + adapter).
+		IDXGIAdapter* p_adapter = 0;
+		if (s_b_luid_set)
+		{
+			IDXGIFactory1* p_factory = 0;
+			if (SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&p_factory)) && p_factory)
+			{
+				IDXGIAdapter1* p_try = 0;
+				for (UINT u_i = 0; p_factory->EnumAdapters1(u_i, &p_try) != DXGI_ERROR_NOT_FOUND; ++u_i)
+				{
+					DXGI_ADAPTER_DESC1 ad;
+					if (SUCCEEDED(p_try->GetDesc1(&ad)) &&
+					    ad.AdapterLuid.LowPart  == s_required_luid.LowPart &&
+					    ad.AdapterLuid.HighPart == s_required_luid.HighPart)
+					{
+						p_adapter = p_try;		// keep this one (reference retained)
+						break;
+					}
+					p_try->Release();
+				}
+				p_factory->Release();
+			}
+			Log(p_adapter ? "TRESPASS_D3D11: using the OpenXR runtime's adapter\n"
+			              : "TRESPASS_D3D11: OpenXR adapter LUID matched no adapter - using the default (VR will not start)\n");
+		}
+
 		HRESULT hr = D3D11CreateDeviceAndSwapChain(
-			0, D3D_DRIVER_TYPE_HARDWARE, 0, 0,
+			p_adapter, p_adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE, 0, 0,
 			afl, (UINT)(sizeof(afl) / sizeof(afl[0])), D3D11_SDK_VERSION,
 			&scd, &s_pSwapChain, &s_pd3dDevice, &fl_got, &s_pd3dContext);
+		if (p_adapter) p_adapter->Release();
 		if (FAILED(hr)) { Log("TRESPASS_D3D11: CreateDeviceAndSwapChain FAILED\n"); Shutdown_Internal(); return; }
 
 		ID3D11Texture2D* p_bb = 0;
@@ -700,6 +774,11 @@ namespace
 			if (it->second.pTex) it->second.pTex->Release();
 		}
 		s_dyn_cache.clear();
+		for (size_t i = 0; i < s_eye_targets.size(); ++i)
+			if (s_eye_targets[i].pRTV) s_eye_targets[i].pRTV->Release();
+		s_eye_targets.clear();
+		if (s_pEyeDSV)        { s_pEyeDSV->Release();        s_pEyeDSV        = 0; }
+		if (s_pEyeDepthTex)   { s_pEyeDepthTex->Release();   s_pEyeDepthTex   = 0; s_eye_depth_w = s_eye_depth_h = 0; }
 		if (s_pCaptureTex)    { s_pCaptureTex->Release();    s_pCaptureTex    = 0; s_b_capture_ok = false; }
 		if (s_pSkyImgSRV)     { s_pSkyImgSRV->Release();     s_pSkyImgSRV     = 0; }
 		if (s_pSkyImgTex)     { s_pSkyImgTex->Release();     s_pSkyImgTex     = 0; s_sky_img_w = s_sky_img_h = 0; }
@@ -735,6 +814,12 @@ namespace
 
 namespace RenderD3D11
 {
+	// Internal, defined below with the present path: upload this frame's geometry once, and
+	// draw one eye's share of it into whatever target is currently bound.  Declared here
+	// because the VR eye render (bRenderEyeToTexture) uses both and comes first in the file.
+	void EnsureGeometryUploaded_();
+	void DrawEye_(int i_eye);
+
 	bool bEnabled()
 	{
 		if (s_i_enabled < 0)
@@ -1022,6 +1107,7 @@ namespace RenderD3D11
 		if (!s_frame_open)
 		{
 			s_verts.clear();
+			s_b_frame_uploaded = false;		// fresh frame: geometry must be uploaded again
 			s_batches.clear();
 			s_bump_verts.clear();
 			s_bump_batches.clear();
@@ -1058,6 +1144,115 @@ namespace RenderD3D11
 
 			s_frame_open = true;
 		}
+		return true;
+	}
+
+	void SetRequiredAdapterLuid(unsigned int u_low, int i_high)
+	{
+		s_required_luid.LowPart  = (DWORD)u_low;
+		s_required_luid.HighPart = (LONG)i_high;
+		s_b_luid_set = true;
+	}
+
+	void* pGetDevice()  { return s_pd3dDevice; }
+	void* pGetContext() { return s_pd3dContext; }
+
+	void PurgeEyeTargets()
+	{
+		for (size_t i = 0; i < s_eye_targets.size(); ++i)
+			if (s_eye_targets[i].pRTV) s_eye_targets[i].pRTV->Release();
+		s_eye_targets.clear();
+		if (s_pEyeDSV)      { s_pEyeDSV->Release();      s_pEyeDSV = 0; }
+		if (s_pEyeDepthTex) { s_pEyeDepthTex->Release(); s_pEyeDepthTex = 0; }
+		s_eye_depth_w = s_eye_depth_h = 0;
+	}
+
+	bool bRenderEyeToTexture(int i_eye, void* p_texture, int i_width, int i_height)
+	{
+		if (!bActive() || !s_frame_open || !p_texture || i_width < 1 || i_height < 1)
+			return false;
+
+		ID3D11Texture2D* p_tex = (ID3D11Texture2D*)p_texture;
+
+		// Find (or build) this image's render-target view.
+		ID3D11RenderTargetView* p_rtv = 0;
+		for (size_t i = 0; i < s_eye_targets.size(); ++i)
+			if (s_eye_targets[i].pTex == p_tex) { p_rtv = s_eye_targets[i].pRTV; break; }
+
+		if (!p_rtv)
+		{
+			// The runtime may have created the swapchain in a typeless or sRGB format, so name
+			// the view format explicitly rather than inheriting it from the resource - a
+			// typeless resource cannot produce a view with a null description at all.
+			D3D11_TEXTURE2D_DESC td; p_tex->GetDesc(&td);
+			D3D11_RENDER_TARGET_VIEW_DESC rtvd; ZeroMemory(&rtvd, sizeof(rtvd));
+			rtvd.Format        = (td.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS) ? DXGI_FORMAT_R8G8B8A8_UNORM
+			                   : (td.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS) ? DXGI_FORMAT_B8G8R8A8_UNORM
+			                   : td.Format;
+			rtvd.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+			if (FAILED(s_pd3dDevice->CreateRenderTargetView(p_tex, &rtvd, &p_rtv)) || !p_rtv)
+			{
+				Log("TRESPASS_VR: CreateRenderTargetView(eye image) FAILED\n");
+				return false;
+			}
+			SEyeTarget et; et.pTex = p_tex; et.pRTV = p_rtv;
+			s_eye_targets.push_back(et);
+		}
+
+		// Depth buffer, rebuilt only if the eye size changed.
+		if (!s_pEyeDSV || s_eye_depth_w != i_width || s_eye_depth_h != i_height)
+		{
+			if (s_pEyeDSV)      { s_pEyeDSV->Release();      s_pEyeDSV = 0; }
+			if (s_pEyeDepthTex) { s_pEyeDepthTex->Release(); s_pEyeDepthTex = 0; }
+
+			D3D11_TEXTURE2D_DESC dtd; ZeroMemory(&dtd, sizeof(dtd));
+			dtd.Width = i_width; dtd.Height = i_height; dtd.MipLevels = 1; dtd.ArraySize = 1;
+			dtd.Format = DXGI_FORMAT_D32_FLOAT; dtd.SampleDesc.Count = 1;
+			dtd.Usage = D3D11_USAGE_DEFAULT; dtd.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+			if (FAILED(s_pd3dDevice->CreateTexture2D(&dtd, 0, &s_pEyeDepthTex)) ||
+			    FAILED(s_pd3dDevice->CreateDepthStencilView(s_pEyeDepthTex, 0, &s_pEyeDSV)))
+			{
+				Log("TRESPASS_VR: eye depth buffer creation FAILED\n");
+				PurgeEyeTargets();
+				return false;
+			}
+			s_eye_depth_w = i_width; s_eye_depth_h = i_height;
+		}
+
+		EnsureGeometryUploaded_();
+
+		s_pd3dContext->OMSetRenderTargets(1, &p_rtv, s_pEyeDSV);
+		s_pd3dContext->OMSetDepthStencilState(s_pDepthState, 0);
+		const float af_blend[4] = { 0, 0, 0, 0 };
+		s_pd3dContext->OMSetBlendState(s_pBlend, af_blend, 0xFFFFFFFF);
+		s_pd3dContext->RSSetState(s_pRaster);
+
+		// The engine's screen-space vertices are sized to the frame the CPU pipeline projected
+		// for, so fit that into the eye image with its aspect preserved rather than stretching
+		// it - a stretched eye image is a direct comfort problem in a headset.
+		float f_scale = (float)i_width / (float)(s_i_frame_w > 0 ? s_i_frame_w : i_width);
+		float f_sh    = (float)i_height / (float)(s_i_frame_h > 0 ? s_i_frame_h : i_height);
+		if (f_sh < f_scale) f_scale = f_sh;
+
+		D3D11_VIEWPORT vp;
+		vp.Width    = (s_i_frame_w > 0 ? s_i_frame_w : i_width)  * f_scale;
+		vp.Height   = (s_i_frame_h > 0 ? s_i_frame_h : i_height) * f_scale;
+		vp.TopLeftX = (i_width  - vp.Width)  * 0.5f;
+		vp.TopLeftY = (i_height - vp.Height) * 0.5f;
+		vp.MinDepth = 0.0f; vp.MaxDepth = 1.0f;
+		s_pd3dContext->RSSetViewports(1, &vp);
+
+		const float af_clear[4] = { s_clear_r, s_clear_g, s_clear_b, 1.0f };
+		s_pd3dContext->ClearRenderTargetView(p_rtv, af_clear);
+		// Depth cleared to 0 (far); closer fragments have larger rhw and win via GEQUAL.
+		s_pd3dContext->ClearDepthStencilView(s_pEyeDSV, D3D11_CLEAR_DEPTH, 0.0f, 0);
+
+		DrawEye_(i_eye);
+
+		// Unbind: the runtime takes ownership of this texture the moment it is released back to
+		// the swapchain, and leaving it bound as a render target is a use-after-hand-back.
+		ID3D11RenderTargetView* p_null = 0;
+		s_pd3dContext->OMSetRenderTargets(1, &p_null, 0);
 		return true;
 	}
 
@@ -1220,6 +1415,122 @@ namespace RenderD3D11
 		return b_ok;
 	}
 
+	//******************************************************************************************
+	//
+	// Upload this frame's geometry, once per frame however many times it is drawn.
+	//
+	// Both eyes' triangles live in the SAME vertex buffers (each batch carries the eye it
+	// belongs to), so every target that wants this frame - the two VR eye images and the
+	// desktop mirror - replays the same buffers rather than re-uploading.  The guard is what
+	// makes that true: without it, rendering into three targets would cost three uploads of an
+	// identical several-megabyte vertex stream.
+	//
+	void EnsureGeometryUploaded_()
+	{
+		if (s_b_frame_uploaded) return;
+		s_b_frame_uploaded = true;
+
+		D3D11_MAPPED_SUBRESOURCE ms;
+		s_b_have_main = !s_verts.empty() && bEnsureVB((UINT)s_verts.size()) &&
+			SUCCEEDED(s_pd3dContext->Map(s_pVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms));
+		if (s_b_have_main)
+		{
+			memcpy(ms.pData, &s_verts[0], s_verts.size() * sizeof(SVert));
+			s_pd3dContext->Unmap(s_pVB, 0);
+		}
+
+		s_b_have_bump = !s_bump_verts.empty() && s_pBumpVS && s_pBumpLayout &&
+			bEnsureBumpVB((UINT)s_bump_verts.size()) &&
+			SUCCEEDED(s_pd3dContext->Map(s_pBumpVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms));
+		if (s_b_have_bump)
+		{
+			memcpy(ms.pData, &s_bump_verts[0], s_bump_verts.size() * sizeof(SBumpVert));
+			s_pd3dContext->Unmap(s_pBumpVB, 0);
+		}
+	}
+
+	//******************************************************************************************
+	//
+	// Draw one eye's share of this frame into whatever render target and viewport are currently
+	// bound: sky behind, then the textured batches, then the bump batches.  Batches tagged
+	// i_EYE_ALL (the backdrop) are drawn for every eye.
+	//
+	// Target-agnostic on purpose - the desktop window and each VR eye image differ only in what
+	// is bound before the call.
+	//
+	void DrawEye_(int i_eye)
+	{
+		const bool b_detile = s_pDetilePS && s_f_detile_strength > 0.0f;
+
+		// Sky pass first, behind everything (no depth test/write): a 1:1 blit of the software
+		// sky image captured this frame.  Geometry draws over it.  It is drawn per eye because
+		// it fills whatever viewport is current, and each eye is a different rectangle.  The
+		// image itself is the same for both - the sky is at effective infinity, so it has no
+		// stereo parallax to lose.
+		if (s_sky_valid && s_pSkyVS && s_pSkyPS && s_pSkyDepthState && s_pSkyImgSRV)
+		{
+			s_pd3dContext->OMSetDepthStencilState(s_pSkyDepthState, 0);
+			s_pd3dContext->IASetInputLayout(0);
+			ID3D11Buffer* p_novb = 0; UINT u_z0 = 0, u_z1 = 0;
+			s_pd3dContext->IASetVertexBuffers(0, 1, &p_novb, &u_z0, &u_z1);
+			s_pd3dContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+			s_pd3dContext->VSSetShader(s_pSkyVS, 0, 0);
+			s_pd3dContext->PSSetShader(s_pSkyPS, 0, 0);
+			s_pd3dContext->PSSetSamplers(0, 1, &s_pSampClamp);
+			s_pd3dContext->PSSetShaderResources(0, 1, &s_pSkyImgSRV);
+			s_pd3dContext->Draw(3, 0);
+			s_pd3dContext->OMSetDepthStencilState(s_pDepthState, 0);	// restore for geometry
+		}
+
+		if (s_b_have_main)
+		{
+			UINT u_stride = sizeof(SVert), u_offset = 0;
+			s_pd3dContext->IASetInputLayout(s_pLayout);
+			s_pd3dContext->IASetVertexBuffers(0, 1, &s_pVB, &u_stride, &u_offset);
+			s_pd3dContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+			s_pd3dContext->VSSetShader(s_pVS, 0, 0);
+			s_pd3dContext->VSSetConstantBuffers(0, 1, &s_pCB);
+			s_pd3dContext->PSSetShader(s_pPS, 0, 0);
+			s_pd3dContext->PSSetConstantBuffers(0, 1, &s_pCB);	// gViewParams.w = detile strength
+			ID3D11PixelShader* p_ps_bound = s_pPS;
+
+			for (size_t i = 0; i < s_batches.size(); ++i)
+			{
+				if (s_batches[i].i_eye != i_eye && s_batches[i].i_eye != i_EYE_ALL) continue;
+				ID3D11SamplerState* p_samp = s_batches[i].b_clamp ? s_pSampClamp : s_pSampWrap;
+				s_pd3dContext->PSSetSamplers(0, 1, &p_samp);
+				ID3D11PixelShader* p_want = (b_detile && !s_batches[i].b_clamp) ? s_pDetilePS : s_pPS;
+				if (p_want != p_ps_bound) { s_pd3dContext->PSSetShader(p_want, 0, 0); p_ps_bound = p_want; }
+				s_pd3dContext->PSSetShaderResources(0, 1, &s_batches[i].pSRV);
+				s_pd3dContext->Draw(s_batches[i].u_count, s_batches[i].u_start);
+			}
+		}
+
+		// Bump pass: object-space normal mapping.  Opaque/cutout (the PS clips holes) and the
+		// depth buffer resolves ordering, so drawing after the main batches is fine.
+		if (s_b_have_bump)
+		{
+			UINT u_stride = sizeof(SBumpVert), u_offset = 0;
+			s_pd3dContext->IASetInputLayout(s_pBumpLayout);
+			s_pd3dContext->IASetVertexBuffers(0, 1, &s_pBumpVB, &u_stride, &u_offset);
+			s_pd3dContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+			s_pd3dContext->VSSetShader(s_pBumpVS, 0, 0);
+			s_pd3dContext->VSSetConstantBuffers(0, 1, &s_pCB);
+			s_pd3dContext->PSSetShader(s_pBumpPS, 0, 0);
+			s_pd3dContext->PSSetConstantBuffers(0, 1, &s_pCB);		// for the debug-tint flag
+
+			for (size_t i = 0; i < s_bump_batches.size(); ++i)
+			{
+				if (s_bump_batches[i].i_eye != i_eye && s_bump_batches[i].i_eye != i_EYE_ALL) continue;
+				ID3D11SamplerState* p_samp = s_bump_batches[i].b_clamp ? s_pSampClamp : s_pSampWrap;
+				s_pd3dContext->PSSetSamplers(0, 1, &p_samp);
+				ID3D11ShaderResourceView* ap_srv[2] = { s_bump_batches[i].pCol, s_bump_batches[i].pNrm };
+				s_pd3dContext->PSSetShaderResources(0, 2, ap_srv);
+				s_pd3dContext->Draw(s_bump_batches[i].u_count, s_bump_batches[i].u_start);
+			}
+		}
+	}
+
 	void Present()
 	{
 		if (!bActive() || !s_pSwapChain) return;
@@ -1228,105 +1539,27 @@ namespace RenderD3D11
 		// leave the last frame on screen rather than showing an uncleared/garbage backbuffer.
 		if (!s_frame_open) return;
 
-		// Upload this frame's geometry ONCE, before any drawing.  In stereo both eyes' triangles
-		// sit in these same buffers (each batch carries the eye it belongs to), so the eye loop
-		// below replays them rather than re-uploading per eye - the vertices are already in the
-		// right place, only the viewport differs.
-		D3D11_MAPPED_SUBRESOURCE ms;
-		bool b_have_main = !s_verts.empty() && bEnsureVB((UINT)s_verts.size()) &&
-			SUCCEEDED(s_pd3dContext->Map(s_pVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms));
-		if (b_have_main)
-		{
-			memcpy(ms.pData, &s_verts[0], s_verts.size() * sizeof(SVert));
-			s_pd3dContext->Unmap(s_pVB, 0);
-		}
+		EnsureGeometryUploaded_();
 
-		bool b_have_bump = !s_bump_verts.empty() && s_pBumpVS && s_pBumpLayout &&
-			bEnsureBumpVB((UINT)s_bump_verts.size()) &&
-			SUCCEEDED(s_pd3dContext->Map(s_pBumpVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms));
-		if (b_have_bump)
-		{
-			memcpy(ms.pData, &s_bump_verts[0], s_bump_verts.size() * sizeof(SBumpVert));
-			s_pd3dContext->Unmap(s_pBumpVB, 0);
-		}
+		// Re-bind the back buffer.  In VR the eye images were rendered between bBeginFrame and
+		// here, which left their target bound; without this the desktop mirror would draw into
+		// the last eye's texture (or nowhere, since it is unbound on the way out).
+		s_pd3dContext->OMSetRenderTargets(1, &s_pBackBufferRTV, s_pDSV);
+		s_pd3dContext->OMSetDepthStencilState(s_pDepthState, 0);
+		s_pd3dContext->RSSetState(s_pRaster);
 
-		const bool b_detile = s_pDetilePS && s_f_detile_strength > 0.0f;
-		const int  i_eyes   = s_i_frame_eyes < 1 ? 1 : s_i_frame_eyes;
+		const int i_eyes = s_i_frame_eyes < 1 ? 1 : s_i_frame_eyes;
 
 		// One pass per eye.  Mono (i_eyes == 1) runs the body exactly once, over the whole back
 		// buffer, which is the path this always took.
 		for (int i_eye = 0; i_eye < i_eyes; ++i_eye)
 		{
-			if (i_eyes > 1)
-				SetEyeViewport_(i_eye);
-
-			// Sky pass first, behind everything (no depth test/write): a 1:1 blit of the
-			// software sky image captured this frame.  Geometry draws over it.  It is drawn per
-			// eye because it fills whatever viewport is current, and each eye is a different
-			// rectangle.  The image itself is the same for both - the sky is at effective
-			// infinity, so it has no stereo parallax to lose.
-			if (s_sky_valid && s_pSkyVS && s_pSkyPS && s_pSkyDepthState && s_pSkyImgSRV)
-			{
-				s_pd3dContext->OMSetDepthStencilState(s_pSkyDepthState, 0);
-				s_pd3dContext->IASetInputLayout(0);
-				ID3D11Buffer* p_novb = 0; UINT u_z0 = 0, u_z1 = 0;
-				s_pd3dContext->IASetVertexBuffers(0, 1, &p_novb, &u_z0, &u_z1);
-				s_pd3dContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-				s_pd3dContext->VSSetShader(s_pSkyVS, 0, 0);
-				s_pd3dContext->PSSetShader(s_pSkyPS, 0, 0);
-				s_pd3dContext->PSSetSamplers(0, 1, &s_pSampClamp);
-				s_pd3dContext->PSSetShaderResources(0, 1, &s_pSkyImgSRV);
-				s_pd3dContext->Draw(3, 0);
-				s_pd3dContext->OMSetDepthStencilState(s_pDepthState, 0);	// restore for geometry
-			}
-
-			if (b_have_main)
-			{
-				UINT u_stride = sizeof(SVert), u_offset = 0;
-				s_pd3dContext->IASetInputLayout(s_pLayout);
-				s_pd3dContext->IASetVertexBuffers(0, 1, &s_pVB, &u_stride, &u_offset);
-				s_pd3dContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-				s_pd3dContext->VSSetShader(s_pVS, 0, 0);
-				s_pd3dContext->VSSetConstantBuffers(0, 1, &s_pCB);
-				s_pd3dContext->PSSetShader(s_pPS, 0, 0);
-				s_pd3dContext->PSSetConstantBuffers(0, 1, &s_pCB);	// gViewParams.w = detile strength
-				ID3D11PixelShader* p_ps_bound = s_pPS;
-
-				for (size_t i = 0; i < s_batches.size(); ++i)
-				{
-					if (s_batches[i].i_eye != i_eye && s_batches[i].i_eye != i_EYE_ALL) continue;
-					ID3D11SamplerState* p_samp = s_batches[i].b_clamp ? s_pSampClamp : s_pSampWrap;
-					s_pd3dContext->PSSetSamplers(0, 1, &p_samp);
-					ID3D11PixelShader* p_want = (b_detile && !s_batches[i].b_clamp) ? s_pDetilePS : s_pPS;
-					if (p_want != p_ps_bound) { s_pd3dContext->PSSetShader(p_want, 0, 0); p_ps_bound = p_want; }
-					s_pd3dContext->PSSetShaderResources(0, 1, &s_batches[i].pSRV);
-					s_pd3dContext->Draw(s_batches[i].u_count, s_batches[i].u_start);
-				}
-			}
-
-			// Bump pass: object-space normal mapping.  Opaque/cutout (the PS clips holes) and
-			// the depth buffer resolves ordering, so drawing after the main batches is fine.
-			if (b_have_bump)
-			{
-				UINT u_stride = sizeof(SBumpVert), u_offset = 0;
-				s_pd3dContext->IASetInputLayout(s_pBumpLayout);
-				s_pd3dContext->IASetVertexBuffers(0, 1, &s_pBumpVB, &u_stride, &u_offset);
-				s_pd3dContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-				s_pd3dContext->VSSetShader(s_pBumpVS, 0, 0);
-				s_pd3dContext->VSSetConstantBuffers(0, 1, &s_pCB);
-				s_pd3dContext->PSSetShader(s_pBumpPS, 0, 0);
-				s_pd3dContext->PSSetConstantBuffers(0, 1, &s_pCB);		// for the debug-tint flag
-
-				for (size_t i = 0; i < s_bump_batches.size(); ++i)
-				{
-					if (s_bump_batches[i].i_eye != i_eye && s_bump_batches[i].i_eye != i_EYE_ALL) continue;
-					ID3D11SamplerState* p_samp = s_bump_batches[i].b_clamp ? s_pSampClamp : s_pSampWrap;
-					s_pd3dContext->PSSetSamplers(0, 1, &p_samp);
-					ID3D11ShaderResourceView* ap_srv[2] = { s_bump_batches[i].pCol, s_bump_batches[i].pNrm };
-					s_pd3dContext->PSSetShaderResources(0, 2, ap_srv);
-					s_pd3dContext->Draw(s_bump_batches[i].u_count, s_bump_batches[i].u_start);
-				}
-			}
+			// Always set the viewport, even for a single eye.  bBeginFrame set it at frame
+			// open, but a VR frame renders its eye images in between and leaves that eye's
+			// viewport bound - so the mirror cannot rely on what was set earlier.  With one
+			// eye this reproduces the full-window viewport exactly.
+			SetEyeViewport_(i_eye);
+			DrawEye_(i_eye);
 		}
 
 		// Snapshot the finished frame BEFORE presenting - the swap chain discards the back

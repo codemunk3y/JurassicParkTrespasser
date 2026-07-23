@@ -76,6 +76,7 @@
 #include "Lib/Std/PrivSelf.hpp"
 #include "Lib/Renderer/ScreenRenderAuxD3D.hpp"
 #include "Lib/View/RenderD3D11.hpp"
+#include "Lib/View/RenderVR.hpp"
 #include "Lib/W95/Direct3DCards.hpp"
 
 //
@@ -1500,9 +1501,16 @@ rptr<CRaster> prasReadBMP(const char* str_bitmap_name, bool b_vid)
 		// game looks hung).
 		if (RenderD3D11::bActive() && RenderD3D11::bFrameOpen())
 		{
+			// Hand the frame to the VR runtime FIRST, while it still exists: this renders each
+			// eye from the accumulated geometry into its swapchain image and submits the
+			// projection layer.  Present is what consumes and discards the frame, so doing it
+			// the other way round would leave the headset nothing to draw.  No-op without VR.
+			RenderVR::SubmitFrame();
+
 			// Flip is the real once-per-frame boundary: draw everything the DrawPolygons passes
 			// accumulated this frame and present it through the DXGI swap chain (a single clear +
-			// present per frame, instead of one per render pass).
+			// present per frame, instead of one per render pass).  In VR this doubles as the
+			// desktop mirror of what the headset is showing.
 			RenderD3D11::Present();
 			return;
 		}

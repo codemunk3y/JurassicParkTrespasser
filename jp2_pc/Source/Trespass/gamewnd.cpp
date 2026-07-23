@@ -984,6 +984,11 @@ void CGameWnd::DrawWndInfo(CRaster * pRaster, RECT * prc)
 	    // brings the runtime up and logs what it finds; it renders nothing yet.
 	    RenderVR::bInit();
 
+	    // Start this frame on the VR runtime's clock: creates the session once the renderer
+	    // has a device, pumps the OpenXR event queue, and picks up the frame the timing
+	    // thread has waited for.  Never blocks - see RenderVR.hpp.  No-op without VR.
+	    RenderVR::FrameBegin();
+
 	    gmlGameLoop.Paint();
 
 	    // PROFILER DUMP (DIAGNOSTIC, env TRESPASS_PROFILE): the render pipeline

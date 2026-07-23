@@ -249,6 +249,56 @@ namespace RenderD3D11
 
 	//******************************************************************************************
 	//
+	// VR: ADAPTER SELECTION.  An OpenXR runtime dictates which GPU the session must run on (it
+	// reports the adapter LUID the headset is attached to), and xrCreateSession REJECTS a D3D11
+	// device created on any other adapter.  This module otherwise creates its device on the
+	// default adapter, which is the wrong one on a multi-GPU machine - the common laptop case of
+	// an integrated display GPU plus a discrete one driving the headset.
+	//
+	// Call BEFORE the device is created - i.e. before the first bBeginFrame - or it has no
+	// effect (the device is not torn down and rebuilt underneath a running renderer).  Passing
+	// a LUID no adapter matches falls back to the default adapter and logs, rather than failing
+	// to bring up a renderer at all; VR then won't start but the game still runs.
+	//
+	void SetRequiredAdapterLuid(unsigned int u_low, int i_high);
+
+	//******************************************************************************************
+	//
+	// The live D3D11 device and immediate context, as void* so this header needs no <d3d11.h>.
+	// Null until the device has been created (lazily, on the first bBeginFrame).  Exposed so the
+	// VR layer can build its XrSession graphics binding on the SAME device the renderer uses -
+	// sharing the device is what lets the eye images be rendered and handed to the runtime with
+	// no cross-device copy.
+	//
+	void* pGetDevice();
+	void* pGetContext();
+
+	//******************************************************************************************
+	//
+	// VR: render one eye's accumulated geometry into a caller-supplied D3D11 texture - in
+	// practice an OpenXR swapchain image, which the runtime owns and hands over per frame.
+	//
+	// This is the same draw the desktop path does, aimed at a different target: the geometry for
+	// the frame is uploaded once and replayed per eye, so calling this for each eye and then
+	// presenting the window costs one upload, not three.  A render-target view (and a matching
+	// depth buffer) is created on first sight of each texture and cached, since a swapchain
+	// cycles through a small fixed set of images.
+	//
+	// Must be called while the frame is still open - i.e. before Present, which consumes it.
+	// Returns false if VR is inactive, the frame is empty, or the target could not be bound.
+	//
+	bool bRenderEyeToTexture(int i_eye, void* p_texture, int i_width, int i_height);
+
+	//******************************************************************************************
+	//
+	// Release every cached eye render target.  Call when the VR swapchains are destroyed: the
+	// cache is keyed by texture pointer and the runtime may reuse those addresses for different
+	// images afterwards.
+	//
+	void PurgeEyeTargets();
+
+	//******************************************************************************************
+	//
 	// True between bBeginFrame and Present, i.e. a 3D frame's polygons have been accumulated
 	// and are waiting to be presented.  False on a UI-only frame (e.g. the paused in-game
 	// menu, drawn into the software raster), which lets CRasterWin::Flip fall back to the GDI
