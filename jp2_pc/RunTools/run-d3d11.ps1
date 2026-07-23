@@ -92,6 +92,23 @@ if ($RuntimeJson) {
     if (-not (Test-Path -LiteralPath $RuntimeJson)) { throw "OpenXR runtime manifest not found: $RuntimeJson" }
     $env:XR_RUNTIME_JSON = (Resolve-Path -LiteralPath $RuntimeJson).Path
     Write-Host "XR_RUNTIME_JSON = $($env:XR_RUNTIME_JSON)" -ForegroundColor Green
+
+    # THE LOADER IGNORES XR_RUNTIME_JSON WHEN THE PROCESS IS ELEVATED.  It is a deliberate
+    # security rule (an env var must not be able to redirect an admin process into loading an
+    # arbitrary DLL), and it is silent apart from one line on the loader's own stderr - so the
+    # game comes up on WHATEVER runtime is registered system-wide instead, which looks like
+    # -RuntimeJson being ignored for no reason.  Say so up front rather than letting it be
+    # discovered from a confusing run.
+    $b_elevated = ([Security.Principal.WindowsPrincipal] `
+        [Security.Principal.WindowsIdentity]::GetCurrent()
+    ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+    if ($b_elevated) {
+        Write-Host "WARNING: this shell is ELEVATED, and the OpenXR loader ignores XR_RUNTIME_JSON" -ForegroundColor Yellow
+        Write-Host "         in an elevated process.  -RuntimeJson will have NO effect: the game will" -ForegroundColor Yellow
+        Write-Host "         use whatever runtime is registered system-wide.  Run from a normal," -ForegroundColor Yellow
+        Write-Host "         non-elevated shell to choose the runtime per launch." -ForegroundColor Yellow
+    }
 }
 if ($VR -or $RuntimeJson) {
     $env:TRESPASS_VR = '1'
@@ -228,9 +245,17 @@ if (Test-Path -LiteralPath $rlog) {
     Write-Host "previous log kept as trespass_render.prev.log" -ForegroundColor DarkGray
 }
 
-Push-Location $ExeDir
-try { & $exe @args }
-finally { Pop-Location }
+# START-PROCESS -WAIT, NOT THE CALL OPERATOR.  PowerShell only blocks on `& $exe` for CONSOLE
+# subsystem executables; trespass.exe is a GUI app, so the call returns the instant it starts and
+# everything below - the whole point of which is to report what the finished run did - used to run
+# against a log the game had not written a single line of yet.  That is why this script would say
+# "no trespass_render.log was written at all" about a run that was working perfectly.
+#
+# -WorkingDirectory rather than Push-Location: the game resolves tpass.ini against the current
+# directory, and a Start-Process child does not inherit this shell's location.
+$startArgs = @{ FilePath = $exe; WorkingDirectory = $ExeDir; Wait = $true }
+if ($args.Count) { $startArgs['ArgumentList'] = $args }   # Start-Process rejects an EMPTY list
+Start-Process @startArgs
 
 # ---- What actually happened this run --------------------------------------
 if (Test-Path -LiteralPath $rlog) {

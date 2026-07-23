@@ -38,6 +38,9 @@ Write-Host 'TRESPASS_D3D11 unset  ->  original software rasteriser' -ForegroundC
 Write-Host "Working dir: $ExeDir"
 Write-Host "Launching:   $exe`n"
 
-Push-Location $ExeDir
-try { & $exe @args }
-finally { Pop-Location }
+# Start-Process -Wait, not `& $exe`: PowerShell does not block on a GUI-subsystem executable, so
+# the call operator would return the moment the game started.  -WorkingDirectory because the game
+# resolves tpass.ini against the current directory.
+$startArgs = @{ FilePath = $exe; WorkingDirectory = $ExeDir; Wait = $true }
+if ($args.Count) { $startArgs['ArgumentList'] = $args }   # Start-Process rejects an EMPTY list
+Start-Process @startArgs
