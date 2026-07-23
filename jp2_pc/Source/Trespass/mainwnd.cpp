@@ -21,6 +21,11 @@
 #include "resource.h"
 #include "main.h"
 #include "tpassglobals.h"
+// bActive() - VR is in play, so keep rendering through focus loss.  Deliberately NOT
+// bSessionRunning(): the runtime takes foreground BEFORE the session can exist (the session
+// needs the D3D11 device, which is only created once the game starts painting), so a
+// session-based guard is still false at the exact moment the focus is stolen.
+#include "..\Lib\View\RenderVR.hpp"
 #include "..\Lib\Sys\reg.h"
 #include "..\lib\sys\reginit.hpp"
 #include "uiwnd.h"
@@ -394,7 +399,18 @@ void CMainWnd::OnActivateApp(HWND hwnd, BOOL fActivate, DWORD dwThreadId)
             ClipCursor(NULL);
         }
 
-        if (m_pUIMgr->m_bActive)
+        // IN VR, DO NOT TEAR THE RENDERER DOWN ON FOCUS LOSS.
+        //
+        // Releasing the display when a fullscreen game is alt-tabbed away from is right for
+        // 1998 - but in VR the headset is the primary display and the desktop window is only a
+        // mirror, so losing foreground is routine (the runtime's own compositor or control
+        // panel taking focus does it).  Destroying prasMainScreen there stops the game
+        // rendering entirely: the window goes black, the cursor reappears, and the session
+        // keeps running with nothing to submit until the player clicks the window back.
+        //
+        // The session is what matters, not the desktop focus, so while one is live this whole
+        // branch is skipped and the game keeps rendering both eyes.
+        if (m_pUIMgr->m_bActive && !RenderVR::bActive())
         {
             m_pUIMgr->m_bPause = TRUE;
             ForceShowCursor(TRUE);
@@ -407,7 +423,8 @@ void CMainWnd::OnActivateApp(HWND hwnd, BOOL fActivate, DWORD dwThreadId)
 				std::destroy_at(&prasMainScreen);
         }
 
-        m_pUIMgr->m_bActive = FALSE;
+        if (!RenderVR::bActive())
+            m_pUIMgr->m_bActive = FALSE;
     }
     else
     {
