@@ -26,6 +26,8 @@
 #include "tpassglobals.h"
 #include "gblinc/buildver.hpp"
 #include "Lib/W95/Direct3DCards.hpp"
+#include "Lib/View/RenderD3D11.hpp"
+#include "Lib/View/RenderVR.hpp"
 #include "Version.hpp"
 #include <filesystem>
 
@@ -331,6 +333,13 @@ void TrespassExceptionCleanup()
     ForceShowCursor(TRUE);
     ClipCursor(NULL);
 
+    // Same reason as the Cleanup path in DoWinMain: a live OpenXR session and its frame-timing
+    // thread deadlock the process exit that follows.  Crashing with VR up otherwise leaves the
+    // same unreapable zombie holding the single-instance mutex, which blocks the next launch -
+    // i.e. the crash costs you the next run too, not just this one.
+    RenderVR::Shutdown();
+    RenderD3D11::Shutdown();
+
 	// Remove the audio, we are about to quit.
 	delete CAudio::pcaAudio;
 
@@ -632,6 +641,21 @@ DoRestartWithRenderDlg:
     iRet = 1;
 
 Cleanup:
+
+    // SHUT VR AND THE D3D11 BACKEND DOWN BEFORE THE PROCESS EXITS.
+    //
+    // Neither used to be torn down at all - the OpenXR session, its swapchains, the loader DLL
+    // and the frame-timing thread all just rode the process to ExitProcess.  That DEADLOCKS the
+    // exit: ExitProcess terminates every thread but the caller, so the timing thread dies inside
+    // xrWaitFrame while it holds a lock in the runtime's DLL, and the loader then blocks forever
+    // running that DLL's DLL_PROCESS_DETACH.  The result is a process stuck on its last thread
+    // (wait reason WrAlertByThreadId), never reaped, never releasing its handles - including the
+    // single-instance mutex, which then refuses every subsequent launch.
+    //
+    // Order is inside-out: VR owns swapchain images that live on the D3D11 device, so the session
+    // has to go before the device does.  Both are no-ops if that subsystem never started.
+    RenderVR::Shutdown();
+    RenderD3D11::Shutdown();
 
     if (DirectDraw::pdd)
     {
