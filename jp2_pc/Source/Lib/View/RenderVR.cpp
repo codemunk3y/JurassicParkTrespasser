@@ -1112,8 +1112,27 @@ namespace RenderVR
 				(int)r_enum, u_ext_count);
 			Log(buf);
 			if (r_enum == XR_ERROR_RUNTIME_UNAVAILABLE)
-				Log("TRESPASS_VR: the runtime could not be loaded - check the manifest's library_path,\n"
-				    "TRESPASS_VR: and whether the simulator's companion app needs to be running\n");
+			{
+				// XR_ERROR_RUNTIME_UNAVAILABLE is reported both for "no runtime installed" and
+				// for "the runtime is there and refused us", which are diagnosed completely
+				// differently - so list the causes actually seen rather than guessing at one.
+				//
+				// ELEVATION IS FIRST BECAUSE IT IS THE LEAST OBVIOUS.  SteamVR will not talk to a
+				// process at a different integrity level: launched from an administrator shell
+				// while SteamVR runs normally (or the reverse), its client DLL loads and then
+				// cannot reach vrserver, so everything looks installed and correct and the
+				// session simply never comes up.
+				Log("TRESPASS_VR: the runtime is installed but would not start.  In order of how\n"
+				    "TRESPASS_VR: often this is the cause:\n"
+				    "TRESPASS_VR:  1. ELEVATION MISMATCH - this game and the runtime must run at the\n"
+				    "TRESPASS_VR:     same level.  SteamVR refuses a process launched as administrator\n"
+				    "TRESPASS_VR:     when SteamVR itself is not (and vice versa).\n"
+				    "TRESPASS_VR:  2. the runtime's own service is not running (start SteamVR / the\n"
+				    "TRESPASS_VR:     Meta simulator's companion app first)\n"
+				    "TRESPASS_VR:  3. the headset is asleep, off, or not plugged in\n"
+				    "TRESPASS_VR:  4. ActiveRuntime points at a manifest that is missing, or whose\n"
+				    "TRESPASS_VR:     library_path does not resolve\n");
+			}
 		}
 		bool b_have_d3d11 = false;
 		if (u_ext_count)
@@ -1147,7 +1166,15 @@ namespace RenderVR
 		}
 		if (!b_have_d3d11)
 		{
-			Log("TRESPASS_VR: runtime lacks " XR_KHR_D3D11_ENABLE_EXTENSION_NAME " - cannot use the D3D11 renderer with it\n");
+			// Do not accuse the runtime of lacking D3D11 when the truth is that nothing was
+			// enumerated at all - that reads as "your headset is incompatible" and sends the
+			// reader after a graphics problem that does not exist.  An empty list after a failed
+			// query means the runtime never answered; the real cause was logged above.
+			if (u_ext_count == 0)
+				Log("TRESPASS_VR: no extensions were enumerated, so D3D11 support is unknown - VR off\n"
+				    "TRESPASS_VR: (this is the failure above, NOT a graphics-API incompatibility)\n");
+			else
+				Log("TRESPASS_VR: runtime lacks " XR_KHR_D3D11_ENABLE_EXTENSION_NAME " - cannot use the D3D11 renderer with it\n");
 			Shutdown_Internal();
 			return false;
 		}
