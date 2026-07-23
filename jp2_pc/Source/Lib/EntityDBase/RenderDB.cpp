@@ -305,12 +305,69 @@ static rptr<CLightAmbient>	pamb;
 				CCamera::SProperties camprop = wqcam.tGet()->campropGetProperties();
 				CPresence3<> pr3_eye = wqcam.tGet()->pr3VPresence();
 
-				// Offset along the camera's LOCAL right axis, so the eyes separate across the
-				// view however the head is turned or pitched.  Camera space here is X = right,
-				// Y = forward, Z = up (see the view-normalising transform in CCamera).
-				float f_offset = RenderVR::fEyeOffsetX(i_eye);
-				if (f_offset != 0.0f)
-					pr3_eye.v3Pos += CVector3<>(f_offset, 0, 0) * pr3_eye.r3Rot;
+				// HEAD TRACKING (M4).  When the runtime has a tracked pose for this eye, it
+				// supersedes the fixed IPD offset below: the pose IS that eye's, half an IPD
+				// included, so applying both would separate the eyes twice.
+				RenderVR::SEyeView eyev;
+				if (RenderVR::bEyeView(i_eye, eyev))
+				{
+					// The game camera stays in charge of where the player is and which way the
+					// body faces (mouse look, physics, cutscenes); the head pose is applied
+					// RELATIVE to it.  Composed head-then-body, because the pose is expressed in
+					// the player's own frame - and in this engine a*b means "a first, then b"
+					// (Rotate.hpp: operator* defers to b.r3Rotate(a)).
+					CRotate3<> r3_head
+					(
+						eyev.f_rot_w,
+						CVector3<>(eyev.af_rot_v[0], eyev.af_rot_v[1], eyev.af_rot_v[2])
+					);
+
+					// Room-scale movement: the LOCAL reference space puts its origin where the
+					// player's head was when the session began, so this is a small offset from
+					// the game camera rather than a position in the level.  It is rotated into
+					// world space by the BODY rotation, not the composed one - leaning left is
+					// leftward relative to the body, and must not itself be turned by the head.
+					CVector3<> v3_head(eyev.af_pos[0], eyev.af_pos[1], eyev.af_pos[2]);
+
+					pr3_eye.v3Pos += v3_head * pr3_eye.r3Rot;
+					pr3_eye.r3Rot  = r3_head * pr3_eye.r3Rot;
+
+					// PROJECTION.  The headset's frustum is asymmetric and this camera can only
+					// be symmetric, so render the smallest symmetric frustum that CONTAINS it -
+					// take the larger half-angle on each axis.  That draws everything the runtime
+					// wants plus a margin it will crop, which costs some fill and is correct;
+					// undersizing would leave the headset with nothing to show at the edges.
+					float f_tan_h = Max(Abs(eyev.f_tan_left), Abs(eyev.f_tan_right));
+					float f_tan_v = Max(Abs(eyev.f_tan_up),   Abs(eyev.f_tan_down));
+
+					if (f_tan_h > 0.0f && f_tan_v > 0.0f)
+					{
+						// rViewWidth is the tangent of the half view angle, but the engine
+						// divides it by the zoom factor when it builds the projection, so fold
+						// the zoom back in to get the angle actually asked for.
+						camprop.rViewWidth   = f_tan_h * camprop.fZoomFactor;
+
+						// Width-to-height of the view volume.  This also cancels the engine's
+						// hardcoded 4:3, which would otherwise stretch the image on its way into
+						// a square-ish eye texture.
+						camprop.fAspectRatio = f_tan_h / f_tan_v;
+
+						// Tell the VR layer what it is about to be given, so the projection layer
+						// describes this frustum rather than the runtime's.
+						RenderVR::SetRenderedFov(i_eye, -f_tan_h, f_tan_h, f_tan_v, -f_tan_v);
+					}
+				}
+				else
+				{
+					// No tracked pose - the desktop side-by-side stereo path (TRESPASS_VR_STEREO
+					// with no runtime), or a frame where the runtime has lost tracking.  Offset
+					// along the camera's LOCAL right axis, so the eyes separate across the view
+					// however the head is turned or pitched.  Camera space here is X = right,
+					// Y = forward, Z = up (see the view-normalising transform in CCamera).
+					float f_offset = RenderVR::fEyeOffsetX(i_eye);
+					if (f_offset != 0.0f)
+						pr3_eye.v3Pos += CVector3<>(f_offset, 0, 0) * pr3_eye.r3Rot;
+				}
 
 				CCamera cam(pr3_eye, camprop);
 

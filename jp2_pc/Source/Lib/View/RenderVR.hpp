@@ -123,6 +123,72 @@ namespace RenderVR
 
 	//******************************************************************************************
 	//
+	// HEAD TRACKING (M4).
+	//
+	// Where the runtime says this eye is, and what it can see from there, for the frame that
+	// FrameBegin most recently picked up.
+	//
+	// EVERYTHING HERE IS ALREADY IN ENGINE AXES AND ENGINE UNITS - the OpenXR-to-Trespasser
+	// conversion happens once, inside this module, rather than at each call site.  OpenXR is
+	// X = right, Y = up, Z = backwards; the engine's camera space is X = right, Y = forward,
+	// Z = up (Camera.cpp's view-normalising transform), so the map is (x, -z, y).  That is a
+	// proper rotation, so it preserves handedness and applies unchanged to the quaternion's
+	// vector part.  Trespasser's world unit is the metre, so positions need no scaling.
+	//
+	// The position is relative to the LOCAL reference space, whose origin is roughly where the
+	// player's head was when the session started - so it is a small room-scale offset to add to
+	// the game's own camera position, not an absolute world position.
+	//
+	// The pose is the EYE's, not the head's: it already includes that eye's half of the IPD.
+	// Anything using it must NOT also apply fEyeOffsetX, or the eyes separate twice.
+	//
+	// Prefix: eyev
+	//
+	struct SEyeView
+	{
+		float af_pos[3];		// eye position, engine axes, metres, LOCAL space
+		float f_rot_w;			// eye orientation as a quaternion, engine axes:
+		float af_rot_v[3];		//   scalar part, then vector part
+
+		// Tangents of the four half-angles of this eye's frustum.  Left and down are normally
+		// negative: an HMD's frustum is ASYMMETRIC, which is why these are four numbers and not
+		// one field of view.  Tangents rather than angles because that is the form the
+		// projection maths wants, and computing them once here keeps tanf out of the frame loop.
+		float f_tan_left, f_tan_right, f_tan_up, f_tan_down;
+	};
+
+	//******************************************************************************************
+	//
+	// Fill in where eye i_eye is for this frame.  Returns false - leaving eyev untouched - when
+	// there is no tracked pose to give: VR inactive, no frame picked up yet, or the runtime
+	// reporting its position or orientation as invalid (which it does legitimately, e.g. while
+	// the headset is being put on).  A false return means "carry on with the flat camera", so
+	// every caller needs a path that does not use head tracking at all.
+	//
+	bool bEyeView(int i_eye, SEyeView& eyev);
+
+	//******************************************************************************************
+	//
+	// Declare the frustum this eye was ACTUALLY rendered with, as tangents of its four half
+	// angles, so that the projection layer describes the image being handed over rather than the
+	// one the runtime suggested.
+	//
+	// This matters because the engine cannot render the runtime's frustum exactly.  An HMD's is
+	// asymmetric (four different angles); Trespasser's camera is symmetric, so the closest it
+	// can do is a symmetric frustum that CONTAINS the asymmetric one.  Submitting the runtime's
+	// angles for an image drawn with different ones makes the compositor reproject it wrongly -
+	// the world comes out at the wrong scale and skewed, which reads as bad tracking rather than
+	// as a projection error.  Telling the truth here is what makes it correct; the cost of the
+	// containing frustum is some overdraw at the edges, not accuracy.
+	//
+	// Call once per eye per frame, after the camera for that eye is built and before Present.
+	// Not called = fall back to the runtime's own angles.
+	//
+	void SetRenderedFov(int i_eye, float f_tan_left, float f_tan_right,
+	                               float f_tan_up,   float f_tan_down);
+
+	//******************************************************************************************
+	//
 	// SESSION + FRAME LOOP (M2).
 	//
 	// FrameBegin is called once at the top of each rendered frame, before the engine paints.

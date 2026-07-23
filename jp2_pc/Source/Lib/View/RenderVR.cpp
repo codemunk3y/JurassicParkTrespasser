@@ -155,6 +155,19 @@ namespace
 	XrView        s_a_views[k_i_eyes];
 	XrViewConfigurationView s_a_view_cfg[k_i_eyes];
 
+	// The frustum each eye was really rendered with this frame (tangents), and whether the
+	// renderer has declared one.  Reset every frame: a stale frustum from a frame that is no
+	// longer on screen would be submitted as if it described the current image.
+	float s_aa_f_rendered_tan[k_i_eyes][4] = { { 0, 0, 0, 0 }, { 0, 0, 0, 0 } };
+	bool  s_ab_rendered_fov[k_i_eyes]      = { false, false };
+
+	// Whether the poses in s_a_views are actually tracked this frame.  The runtime reports
+	// position and orientation validity separately and either can drop out on its own (a headset
+	// being put on, tracking lost, a runtime that only ever orients), so both are kept: a view
+	// with a valid orientation and a stale position is still worth rendering with.
+	XrViewStateFlags s_view_state_flags = 0;
+	bool             s_b_views_located  = false;
+
 	XrSwapchain   s_a_swapchain[k_i_eyes]   = { XR_NULL_HANDLE, XR_NULL_HANDLE };
 	XrSwapchainImageD3D11KHR* s_apa_images[k_i_eyes] = { 0, 0 };
 	uint32_t      s_a_image_count[k_i_eyes] = { 0, 0 };
@@ -883,8 +896,14 @@ namespace RenderVR
 		XrViewState vs; memset(&vs, 0, sizeof(vs));
 		vs.type = XR_TYPE_VIEW_STATE;
 		uint32_t u_got = 0;
+		s_b_views_located = false;
+		s_ab_rendered_fov[0] = s_ab_rendered_fov[1] = false;
 		if (XR_SUCCEEDED(s_xrLocateViews(s_session, &vli, &vs, k_i_eyes, &u_got, s_a_views)))
+		{
+			s_view_state_flags = vs.viewStateFlags;
+			s_b_views_located  = (u_got >= (uint32_t)k_i_eyes);
 			UpdateEyeSeparation(vs, u_got);
+		}
 	}
 
 	void SubmitFrame()
@@ -933,7 +952,20 @@ namespace RenderVR
 
 				a_proj_views[i_e].type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
 				a_proj_views[i_e].pose = s_a_views[i_e].pose;
-				a_proj_views[i_e].fov  = s_a_views[i_e].fov;
+
+				// Describe the image being handed over, not the one that was suggested - see
+				// SetRenderedFov.  Only the renderer knows what it managed to draw.
+				if (s_ab_rendered_fov[i_e])
+				{
+					a_proj_views[i_e].fov.angleLeft  = atanf(s_aa_f_rendered_tan[i_e][0]);
+					a_proj_views[i_e].fov.angleRight = atanf(s_aa_f_rendered_tan[i_e][1]);
+					a_proj_views[i_e].fov.angleUp    = atanf(s_aa_f_rendered_tan[i_e][2]);
+					a_proj_views[i_e].fov.angleDown  = atanf(s_aa_f_rendered_tan[i_e][3]);
+				}
+				else
+				{
+					a_proj_views[i_e].fov = s_a_views[i_e].fov;
+				}
 				a_proj_views[i_e].subImage.swapchain            = s_a_swapchain[i_e];
 				a_proj_views[i_e].subImage.imageArrayIndex      = 0;
 				a_proj_views[i_e].subImage.imageRect.offset.x   = 0;
@@ -974,6 +1006,56 @@ namespace RenderVR
 	{
 		if (!bStereoActive()) return 0.0f;
 		return (i_eye == 1) ? s_f_half_ipd : -s_f_half_ipd;
+	}
+
+	bool bEyeView(int i_eye, SEyeView& eyev)
+	{
+		if (!s_b_session_running || !s_b_views_located) return false;
+		if (i_eye < 0 || i_eye >= k_i_eyes)             return false;
+
+		// Both bits, not either: a pose with a valid orientation but an unknown position would
+		// otherwise be used with a garbage position, which is far worse than not tracking at all
+		// - the view would be somewhere random in the level rather than merely not turning.
+		const XrViewStateFlags k_needed =
+			XR_VIEW_STATE_POSITION_VALID_BIT | XR_VIEW_STATE_ORIENTATION_VALID_BIT;
+		if ((s_view_state_flags & k_needed) != k_needed) return false;
+
+		const XrView& view = s_a_views[i_eye];
+
+		// OpenXR (X right, Y up, Z back) -> engine (X right, Y forward, Z up) is (x, -z, y).
+		eyev.af_pos[0]   =  view.pose.position.x;
+		eyev.af_pos[1]   = -view.pose.position.z;
+		eyev.af_pos[2]   =  view.pose.position.y;
+
+		// The same remap applies to the quaternion's vector part with the scalar untouched:
+		// the map is a proper rotation (determinant +1), so it carries the rotation into the
+		// new frame without flipping its sense.  Both conventions are right-handed - the engine's
+		// "clockwise looking along the axis" (Rotate.hpp) is the right-hand rule stated from the
+		// other end, and its rotation matrix (Rotate.cpp) is the standard one.
+		eyev.f_rot_w     =  view.pose.orientation.w;
+		eyev.af_rot_v[0] =  view.pose.orientation.x;
+		eyev.af_rot_v[1] = -view.pose.orientation.z;
+		eyev.af_rot_v[2] =  view.pose.orientation.y;
+
+		eyev.f_tan_left  = tanf(view.fov.angleLeft);		// normally negative
+
+		eyev.f_tan_right = tanf(view.fov.angleRight);
+		eyev.f_tan_up    = tanf(view.fov.angleUp);
+		eyev.f_tan_down  = tanf(view.fov.angleDown);	// normally negative
+
+		return true;
+	}
+
+	void SetRenderedFov(int i_eye, float f_tan_left, float f_tan_right,
+	                               float f_tan_up,   float f_tan_down)
+	{
+		if (i_eye < 0 || i_eye >= k_i_eyes) return;
+
+		s_aa_f_rendered_tan[i_eye][0] = f_tan_left;
+		s_aa_f_rendered_tan[i_eye][1] = f_tan_right;
+		s_aa_f_rendered_tan[i_eye][2] = f_tan_up;
+		s_aa_f_rendered_tan[i_eye][3] = f_tan_down;
+		s_ab_rendered_fov[i_eye]      = true;
 	}
 
 	bool bInit()
