@@ -965,6 +965,59 @@ void CGameWnd::ResizeScreen(int iWidth, int iHeight)
 }
 
 
+//+--------------------------------------------------------------------------
+//
+//  Function:   ReclaimForeground
+//
+//  Synopsis:   Take the foreground window back, for when something else stole
+//              it - specifically the OpenXR runtime, which puts its own window
+//              up as it starts and leaves Trespasser running without focus.
+//
+//              THE SYMPTOM THIS FIXES IS DELIBERATELY MISLEADING: the game
+//              carries on responding to movement and mouse-look, because the
+//              live input path reads GetAsyncKeyState/GetCursorPos, which are
+//              global and do not care about focus (Control.cpp).  Only the
+//              MESSAGE-driven keys die - Esc, F12, the cheat keys - so the game
+//              feels focused while its menu key does nothing, which reads like a
+//              broken menu rather than a focus problem.
+//
+//              SetForegroundWindow alone usually fails here: Windows only
+//              grants it to a process that is already foreground or received
+//              the last input event, and by definition neither is true.  The
+//              documented way through is to attach to the foreground thread's
+//              input queue first, which makes the two threads share focus state
+//              for the duration of the call.
+//
+//  History:    23-Jul-26   Created
+//
+//---------------------------------------------------------------------------
+static void ReclaimForeground(HWND hwnd)
+{
+    HWND    hwndFore = GetForegroundWindow();
+
+    if (!hwnd || hwndFore == hwnd)
+    {
+        return;
+    }
+
+    if (SetForegroundWindow(hwnd) && GetForegroundWindow() == hwnd)
+    {
+        return;
+    }
+
+    DWORD   dwFore = GetWindowThreadProcessId(hwndFore, NULL);
+    DWORD   dwSelf = GetCurrentThreadId();
+
+    if (dwFore && dwFore != dwSelf && AttachThreadInput(dwSelf, dwFore, TRUE))
+    {
+        SetForegroundWindow(hwnd);
+        BringWindowToTop(hwnd);
+        SetFocus(hwnd);
+        AttachThreadInput(dwSelf, dwFore, FALSE);
+    }
+}
+
+
 void CGameWnd::DrawWndInfo(CRaster * pRaster, RECT * prc)
 {
     if (m_bPaused)
@@ -988,6 +1041,28 @@ void CGameWnd::DrawWndInfo(CRaster * pRaster, RECT * prc)
 	    // has a device, pumps the OpenXR event queue, and picks up the frame the timing
 	    // thread has waited for.  Never blocks - see RenderVR.hpp.  No-op without VR.
 	    RenderVR::FrameBegin();
+
+	    // Take the foreground back once the VR session is up.  The runtime grabbed it while
+	    // starting, which costs the player every message-driven key (Esc above all) while
+	    // leaving movement working, so the game looks fine and has no menu.
+	    //
+	    // ONCE, not every frame: if the player deliberately switches to the runtime's own
+	    // window later, snatching focus back would be a fight they cannot win.  This only
+	    // undoes the theft that happens during start-up, which is the case that has no other
+	    // remedy - by the time the session exists the player has no way to ask for focus but
+	    // to alt-tab twice, and no reason to know that is what is wrong.
+	    {
+	        static bool s_b_reclaimed = false;
+	        if (!s_b_reclaimed && RenderVR::bSessionRunning())
+	        {
+	            s_b_reclaimed = true;
+	            ReclaimForeground(g_hwnd);
+	            RenderVR::LogLine(GetForegroundWindow() == g_hwnd
+	                ? "TRESPASS_VR: took the foreground back from the runtime (Esc/menu keys live)\n"
+	                : "TRESPASS_VR: could NOT take the foreground back - Esc will not reach the game\n"
+	                  "             until its window is clicked or alt-tabbed to\n");
+	        }
+	    }
 
 	    gmlGameLoop.Paint();
 
