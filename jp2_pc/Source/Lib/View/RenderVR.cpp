@@ -906,6 +906,42 @@ namespace RenderVR
 		}
 	}
 
+	//******************************************************************************************
+	//
+	// Report a failure in the per-frame submit path - ONCE per call site, because anything wrong
+	// here is wrong every frame and would otherwise bury the log at 45 lines a second.
+	//
+	// These calls all used to have their results discarded, which made the one failure mode that
+	// matters invisible: every frame "succeeds", the desktop mirror looks perfect, the log shows
+	// frames flowing, and the headset shows nothing at all.
+	//
+	void LogSubmitFailure(const char* psz_what, int i_eye, int i_result)
+	{
+		static bool s_ab_logged[8] = { false, false, false, false, false, false, false, false };
+
+		// Key on the call site's name pointer, which is a literal, so each site reports once.
+		static const char* s_apsz_seen[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+		int i_slot = -1;
+		for (int i = 0; i < 8; ++i)
+		{
+			if (s_apsz_seen[i] == psz_what) { i_slot = i; break; }
+			if (!s_apsz_seen[i])            { s_apsz_seen[i] = psz_what; i_slot = i; break; }
+		}
+		if (i_slot < 0 || s_ab_logged[i_slot]) return;
+		s_ab_logged[i_slot] = true;
+
+		char buf[224];
+		if (i_result)
+			sprintf(buf, "TRESPASS_VR: %s FAILED for eye %d (result %d) - the headset will show\n"
+			             "TRESPASS_VR: nothing even though frames are being submitted\n",
+				psz_what, i_eye, i_result);
+		else
+			sprintf(buf, "TRESPASS_VR: %s FAILED for eye %d - the eye image was never drawn, so the\n"
+			             "TRESPASS_VR: headset shows whatever was left in the swapchain (usually black)\n",
+				psz_what, i_eye);
+		Log(buf);
+	}
+
 	void SubmitFrame()
 	{
 		if (!s_b_frame_begun) return;
@@ -931,18 +967,27 @@ namespace RenderVR
 				uint32_t u_index = 0;
 				XrSwapchainImageAcquireInfo ai; memset(&ai, 0, sizeof(ai));
 				ai.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO;
-				if (XR_FAILED(s_xrAcquireSwapchainImage(s_a_swapchain[i_e], &ai, &u_index)))
-				{ b_rendered = false; break; }
+				XrResult r_acq = s_xrAcquireSwapchainImage(s_a_swapchain[i_e], &ai, &u_index);
+				if (XR_FAILED(r_acq))
+				{ LogSubmitFailure("xrAcquireSwapchainImage", i_e, (int)r_acq); b_rendered = false; break; }
 
 				XrSwapchainImageWaitInfo wi; memset(&wi, 0, sizeof(wi));
 				wi.type    = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO;
 				wi.timeout = XR_INFINITE_DURATION;
-				if (XR_FAILED(s_xrWaitSwapchainImage(s_a_swapchain[i_e], &wi)))
-				{ b_rendered = false; break; }
+				XrResult r_wait_img = s_xrWaitSwapchainImage(s_a_swapchain[i_e], &wi);
+				if (XR_FAILED(r_wait_img))
+				{ LogSubmitFailure("xrWaitSwapchainImage", i_e, (int)r_wait_img); b_rendered = false; break; }
 
 				const int i_w = (int)s_a_view_cfg[i_e].recommendedImageRectWidth;
 				const int i_h = (int)s_a_view_cfg[i_e].recommendedImageRectHeight;
-				RenderD3D11::bRenderEyeToTexture(i_e, s_apa_images[i_e][u_index].texture, i_w, i_h);
+
+				// The RESULT MATTERS: if this fails, the eye image is whatever the runtime last
+				// left in that swapchain slot, and it gets submitted as though it were a rendered
+				// frame.  The compositor then has nothing to show and the headset stays dark
+				// while every log line still says frames are flowing - which is exactly the state
+				// that produced "the mirror moves but the headset is black".
+				if (!RenderD3D11::bRenderEyeToTexture(i_e, s_apa_images[i_e][u_index].texture, i_w, i_h))
+					LogSubmitFailure("RenderD3D11::bRenderEyeToTexture", i_e, 0);
 
 				// Release even if the render failed - an acquired image that is never released
 				// deadlocks the swapchain on the next acquire.
@@ -989,7 +1034,23 @@ namespace RenderVR
 		fei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
 		fei.layerCount           = b_rendered ? 1 : 0;
 		fei.layers               = b_rendered ? ap_layers : 0;
-		s_xrEndFrame(s_session, &fei);
+
+		// A rejected layer is silent otherwise: the runtime simply shows nothing, and every other
+		// signal (frames counted, session FOCUSED, mirror correct) says the frame was fine.
+		XrResult r_end = s_xrEndFrame(s_session, &fei);
+		if (XR_FAILED(r_end))
+			LogSubmitFailure("xrEndFrame", -1, (int)r_end);
+		else if (b_rendered)
+		{
+			// Positive confirmation that a frame with a layer was accepted - once.  Its ABSENCE
+			// from the log is then just as informative as its presence.
+			static bool s_b_first = false;
+			if (!s_b_first)
+			{
+				s_b_first = true;
+				Log("TRESPASS_VR: first projection layer accepted by the runtime\n");
+			}
+		}
 
 		// This frame is finished, so the timing thread may go and wait for the next one.  Asking
 		// only here is what keeps exactly one xrWaitFrame in flight and preserves the strict
