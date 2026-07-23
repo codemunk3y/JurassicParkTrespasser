@@ -176,7 +176,32 @@ try {
     Write-Host "note: could not probe the single-instance mutex ($($_.Exception.Message))" -ForegroundColor DarkGray
 }
 
-if ($b_mutex_held -and $live.Count -eq 0) {
+# A FREE MUTEX SETTLES IT - LAUNCH, WHATEVER THE PROCESS LIST SAYS.
+#
+# This has to come first, because a zombie can flicker in and out of Get-Process: the same
+# unreapable process was listed on one probe and absent on the next.  When it is listed, the
+# "genuinely running" branch below used to refuse a launch that would have worked perfectly -
+# the mutex having already been released (by hand, or by the recovery below on an earlier run).
+#
+# The mutex is the thing the GAME actually tests, so it is the only test that predicts whether a
+# launch will succeed.  If it is free, nothing can be holding the single-instance lock, and any
+# process still in the list is a corpse that cannot take it.
+if (-not $b_mutex_held) {
+    if ($live.Count -gt 0) {
+        Write-Host "note: pid $($live.Id -join ', ') is still listed, but the single-instance mutex is FREE -" -ForegroundColor DarkGray
+        Write-Host "      that is a process that has not been reaped, not a running game.  Launching." -ForegroundColor DarkGray
+    }
+}
+elseif ($live.Count -gt 0) {
+    # Mutex held AND a live process: the ordinary "it is already running" case.
+    Write-Host "trespass.exe is genuinely running (pid $($live.Id -join ', '), started $($live[0].StartTime.ToString('HH:mm:ss')))." -ForegroundColor Yellow
+    Write-Host "It holds the single-instance mutex, so a second copy exits immediately and writes" -ForegroundColor Yellow
+    Write-Host "no log at all - -Force cannot bypass that, only this warning." -ForegroundColor Yellow
+    Write-Host "Close it, or: Stop-Process -Id $($live.Id -join ',') -Force" -ForegroundColor Yellow
+    if (-not $Force) { return }
+    Write-Host "-Force given: launching anyway (expect an immediate silent exit)." -ForegroundColor DarkYellow
+}
+else {
     # A ZOMBIE HOLDING THE MUTEX IS RECOVERABLE - DO NOT REBOOT.
     #
     # What has happened: the process called ExitProcess, Windows terminated all its threads but
@@ -221,15 +246,6 @@ if ($b_mutex_held -and $live.Count -eq 0) {
     } else {
         Write-Host "Mutex released - launching normally." -ForegroundColor Green
     }
-}
-
-if ($live.Count -gt 0) {
-    Write-Host "trespass.exe is genuinely running (pid $($live.Id -join ', '), started $($live[0].StartTime.ToString('HH:mm:ss')))." -ForegroundColor Yellow
-    Write-Host "The GAME holds a single-instance mutex, so a second copy exits immediately and" -ForegroundColor Yellow
-    Write-Host "writes no log at all - -Force cannot bypass that, only this warning." -ForegroundColor Yellow
-    Write-Host "Close it, or: Stop-Process -Id $($live.Id -join ',') -Force" -ForegroundColor Yellow
-    if (-not $Force) { return }
-    Write-Host "-Force given: launching anyway (expect an immediate silent exit)." -ForegroundColor DarkYellow
 }
 
 # ROTATE the renderer/VR log rather than deleting it: the previous run is often the interesting
