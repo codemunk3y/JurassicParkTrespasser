@@ -1,14 +1,10 @@
 # Jurassic Park: Trespasser
-A git-based fork of the Jurassic Park: Trespasser source code.
+A git-based fork of the fork of the Jurassic Park: Trespasser source code.
 
-## Discord Server
-#### Click the banner or link below to join the server
-<p align="center">
-  <a href="https://discord.gg/5EngSvu">
-  <img src="https://github.com/GamerDude27/JurassicParkTrespasser/blob/master/images/JPT_DiscordServer.png">
-  </a>
-</p>
-<p align="center">Link: https://discord.gg/5EngSvu</p>
+The intent of this fork is to uplift the game to a modern pipeline, make it 64 bit, GPU rendering pipeline and long term, VR. 
+
+I will be as transparent as I can- the heavy lifting for this work has been done with the help of AI
+
 
 ## Solution Overview
 | Projects          | Generates                         | Notes:                                                                                                                                                                                                                 |
