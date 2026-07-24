@@ -155,6 +155,39 @@ namespace
 	XrView        s_a_views[k_i_eyes];
 	XrViewConfigurationView s_a_view_cfg[k_i_eyes];
 
+	// RECENTRE (2026-07-25).  The LOCAL reference space puts "forward" wherever the headset was
+	// pointing when the session began, which for seated play is often nowhere near where the
+	// player's body faces - measured 90 degrees off in testing, which made the head-vs-body
+	// experiments unreadable.  This is the inverse of the reference YAW, applied to every pose in
+	// bEyeView.  Stored as (x, y, z, w) in OPENXR axes, identity until Recentre() is called.
+	float s_a_recentre[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+
+	// Quaternion product a*b, both (x,y,z,w) in OpenXR axes - standard right-handed convention,
+	// NOT the engine's reversed "a then b" operator*.
+	XrQuaternionf qMul(const float* a, const XrQuaternionf& b)
+	{
+		XrQuaternionf r;
+		r.w = a[3]*b.w - a[0]*b.x - a[1]*b.y - a[2]*b.z;
+		r.x = a[3]*b.x + a[0]*b.w + a[1]*b.z - a[2]*b.y;
+		r.y = a[3]*b.y - a[0]*b.z + a[1]*b.w + a[2]*b.x;
+		r.z = a[3]*b.z + a[0]*b.y - a[1]*b.x + a[2]*b.w;
+		return r;
+	}
+
+	// Rotate v by quaternion q (x,y,z,w): v + 2w(q x v) + 2(q x (q x v)).
+	XrVector3f v3Rotate(const float* q, const XrVector3f& v)
+	{
+		const float t_x = 2.0f * (q[1]*v.z - q[2]*v.y);
+		const float t_y = 2.0f * (q[2]*v.x - q[0]*v.z);
+		const float t_z = 2.0f * (q[0]*v.y - q[1]*v.x);
+
+		XrVector3f r;
+		r.x = v.x + q[3]*t_x + (q[1]*t_z - q[2]*t_y);
+		r.y = v.y + q[3]*t_y + (q[2]*t_x - q[0]*t_z);
+		r.z = v.z + q[3]*t_z + (q[0]*t_y - q[1]*t_x);
+		return r;
+	}
+
 	// The frustum each eye was really rendered with this frame (tangents), and whether the
 	// renderer has declared one.  Reset every frame: a stale frustum from a frame that is no
 	// longer on screen would be submitted as if it described the current image.
@@ -1083,20 +1116,36 @@ namespace RenderVR
 
 		const XrView& view = s_a_views[i_eye];
 
+		// RECENTRE.  Remove the reference yaw captured by Recentre(), so that whichever way the
+		// player was facing then becomes "straight ahead" and lines up with the body.  Done HERE,
+		// in OpenXR space, before the axis remap below: the maths is unambiguous in the frame the
+		// runtime gave us, and every consumer of bEyeView gets the corrected pose for free.
+		//
+		// Yaw only, so recentring while looking up or with the head tilted does not leave the
+		// whole world pitched or rolled.
+		XrQuaternionf q_or = view.pose.orientation;
+		XrVector3f    v_ps = view.pose.position;
+
+		if (s_a_recentre[3] != 1.0f || s_a_recentre[1] != 0.0f)
+		{
+			q_or = qMul(s_a_recentre, q_or);
+			v_ps = v3Rotate(s_a_recentre, v_ps);
+		}
+
 		// OpenXR (X right, Y up, Z back) -> engine (X right, Y forward, Z up) is (x, -z, y).
-		eyev.af_pos[0]   =  view.pose.position.x;
-		eyev.af_pos[1]   = -view.pose.position.z;
-		eyev.af_pos[2]   =  view.pose.position.y;
+		eyev.af_pos[0]   =  v_ps.x;
+		eyev.af_pos[1]   = -v_ps.z;
+		eyev.af_pos[2]   =  v_ps.y;
 
 		// The same remap applies to the quaternion's vector part with the scalar untouched:
 		// the map is a proper rotation (determinant +1), so it carries the rotation into the
 		// new frame without flipping its sense.  Both conventions are right-handed - the engine's
 		// "clockwise looking along the axis" (Rotate.hpp) is the right-hand rule stated from the
 		// other end, and its rotation matrix (Rotate.cpp) is the standard one.
-		eyev.f_rot_w     =  view.pose.orientation.w;
-		eyev.af_rot_v[0] =  view.pose.orientation.x;
-		eyev.af_rot_v[1] = -view.pose.orientation.z;
-		eyev.af_rot_v[2] =  view.pose.orientation.y;
+		eyev.f_rot_w     =  q_or.w;
+		eyev.af_rot_v[0] =  q_or.x;
+		eyev.af_rot_v[1] = -q_or.z;
+		eyev.af_rot_v[2] =  q_or.y;
 
 		eyev.f_tan_left  = tanf(view.fov.angleLeft);		// normally negative
 
@@ -1105,6 +1154,40 @@ namespace RenderVR
 		eyev.f_tan_down  = tanf(view.fov.angleDown);	// normally negative
 
 		return true;
+	}
+
+	void Recentre()
+	{
+		if (!s_b_session_running || !s_b_views_located)
+		{
+			Log("TRESPASS_VR: recentre ignored - no tracked pose yet\n");
+			return;
+		}
+
+		// Twist-about-up of the current head orientation: in OpenXR, up is +Y, so the yaw part of
+		// (w,x,y,z) is (w,0,y,0) renormalised.  Store its INVERSE - conjugate, which for a unit
+		// quaternion just negates the vector part - so that composing it in bEyeView cancels the
+		// yaw the player is facing right now.
+		const XrQuaternionf& q = s_a_views[0].pose.orientation;
+
+		float f_len = sqrtf(q.w * q.w + q.y * q.y);
+		if (f_len < 1e-6f)
+		{
+			// Looking straight up or straight down - no yaw to extract.  Leave it alone rather
+			// than snapping the world to something arbitrary.
+			Log("TRESPASS_VR: recentre ignored - head has no measurable yaw (looking vertically?)\n");
+			return;
+		}
+
+		s_a_recentre[0] = 0.0f;
+		s_a_recentre[1] = -q.y / f_len;		// conjugate: negate the vector part
+		s_a_recentre[2] = 0.0f;
+		s_a_recentre[3] =  q.w / f_len;
+
+		char buf[160];
+		sprintf(buf, "TRESPASS_VR: recentred - reference yaw removed (inv yaw quat y=%.4f w=%.4f)\n",
+			s_a_recentre[1], s_a_recentre[3]);
+		Log(buf);
 	}
 
 	void SetRenderedFov(int i_eye, float f_tan_left, float f_tan_right,

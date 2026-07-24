@@ -658,6 +658,15 @@ void CGameWnd::OnKey(UINT vk, BOOL fDown, int cRepeat, UINT flags)
                 JumpLevel(-1);
             break;
 
+        // VR: Ctrl+R recentres the view - whichever way you are facing becomes straight ahead.
+        // Needed because the OpenXR LOCAL reference space anchors "forward" to wherever the
+        // headset was pointing at session start, which seated is routinely well off the body's
+        // facing (90 degrees, in testing).  Yaw only, so it will not tilt the world.
+        case 'R':
+            if (GetAsyncKeyState(VK_CONTROL) < 0)
+                RenderVR::Recentre();
+            break;
+
 		case 0xbb:
 			if (GetAsyncKeyState(VK_CONTROL) < 0)
 			{

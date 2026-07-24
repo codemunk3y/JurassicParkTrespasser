@@ -184,6 +184,19 @@ namespace RenderVR
 	// Call once per eye per frame, after the camera for that eye is built and before Present.
 	// Not called = fall back to the runtime's own angles.
 	//
+	//******************************************************************************************
+	//
+	// Make whichever way the player is facing RIGHT NOW count as straight ahead.
+	//
+	// The LOCAL reference space anchors "forward" to wherever the headset pointed when the session
+	// began, which for seated play is routinely nowhere near where the player's body faces - 90
+	// degrees off in testing.  This removes that reference yaw from every pose bEyeView returns.
+	//
+	// Yaw only: recentring while looking up, or with the head tilted, must not leave the whole
+	// world pitched or rolled.  No-op with a warning if there is no tracked pose yet.
+	//
+	void Recentre();
+
 	void SetRenderedFov(int i_eye, float f_tan_left, float f_tan_right,
 	                               float f_tan_up,   float f_tan_down);
 
