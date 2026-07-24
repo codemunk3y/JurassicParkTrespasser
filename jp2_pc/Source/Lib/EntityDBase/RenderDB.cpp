@@ -85,6 +85,91 @@ static CProfileStat psOcclusionGetList("Get list", &proProfile.psOcclusion);
 const int iRenderVersion = 3;
 
 static rptr<CLightAmbient>	pamb;
+
+//**********************************************************************************************
+//
+// VR head pose shared across the whole frame - see the per-eye version in CRenderDB::Process.
+//
+// Passes built OUTSIDE the eye loop (the backdrop, the occlusion list) are legitimately shared
+// between the eyes for eye-to-eye TRANSLATION: six centimetres of IPD is sub-pixel parallax at
+// scene distances.  That argument says nothing about the head ROTATION, which can turn ninety
+// degrees away from the body - drop it and those shared passes render as if the head still faced
+// forward.  This returns the head ORIENTATION, the head-CENTRE position (the half-IPD cancels
+// when the two eye poses are averaged), and the combined field of view that CONTAINS both eyes'
+// frusta.  Returns false with the out-params untouched when the runtime has no tracked pose (the
+// flat game, or a frame where tracking dropped), so callers keep their body-camera behaviour.
+//
+static bool bSharedHeadPose
+(
+	CRotate3<>& r3_head,	// out: averaged head rotation
+	CVector3<>& v3_head,	// out: averaged head position, LOCAL engine axes, metres
+	float&      f_tan_h,	// out: half-width  tangent of the combined frustum
+	float&      f_tan_v		// out: half-height tangent of the combined frustum
+)
+{
+	RenderVR::SEyeView eyev0, eyev1;
+	bool b_0 = RenderVR::bEyeView(0, eyev0);
+	bool b_1 = RenderVR::bEyeView(1, eyev1);
+
+	if (!b_0 && !b_1)
+		return false;
+
+	float f_w, af_v[3], af_pos[3];
+	float f_tl, f_tr, f_tu, f_td;
+
+	if (b_0 && b_1)
+	{
+		// Align the quaternion signs before summing - q and -q are the same rotation, so a blind
+		// sum can cancel instead of blend.  (A canted-display headset like the Index angles each
+		// panel outward, so either eye alone points several degrees off the head's own direction.)
+		float f_dot = eyev0.f_rot_w     * eyev1.f_rot_w
+		            + eyev0.af_rot_v[0] * eyev1.af_rot_v[0]
+		            + eyev0.af_rot_v[1] * eyev1.af_rot_v[1]
+		            + eyev0.af_rot_v[2] * eyev1.af_rot_v[2];
+		float f_sign = (f_dot < 0.0f) ? -1.0f : 1.0f;
+
+		f_w     = eyev0.f_rot_w     + f_sign * eyev1.f_rot_w;
+		af_v[0] = eyev0.af_rot_v[0] + f_sign * eyev1.af_rot_v[0];
+		af_v[1] = eyev0.af_rot_v[1] + f_sign * eyev1.af_rot_v[1];
+		af_v[2] = eyev0.af_rot_v[2] + f_sign * eyev1.af_rot_v[2];
+
+		// Head CENTRE: averaging the two eye positions cancels the half-IPD that separates them,
+		// leaving the head centre plus any room-scale lean.
+		af_pos[0] = 0.5f * (eyev0.af_pos[0] + eyev1.af_pos[0]);
+		af_pos[1] = 0.5f * (eyev0.af_pos[1] + eyev1.af_pos[1]);
+		af_pos[2] = 0.5f * (eyev0.af_pos[2] + eyev1.af_pos[2]);
+
+		// Combined field of view: the symmetric frustum that CONTAINS both eyes'.
+		f_tl = Max(Abs(eyev0.f_tan_left),  Abs(eyev1.f_tan_left));
+		f_tr = Max(Abs(eyev0.f_tan_right), Abs(eyev1.f_tan_right));
+		f_tu = Max(Abs(eyev0.f_tan_up),    Abs(eyev1.f_tan_up));
+		f_td = Max(Abs(eyev0.f_tan_down),  Abs(eyev1.f_tan_down));
+	}
+	else
+	{
+		// Only one eye has a tracked pose - a few degrees of cant beats no head rotation at all.
+		const RenderVR::SEyeView& eyev = b_0 ? eyev0 : eyev1;
+		f_w     = eyev.f_rot_w;
+		af_v[0] = eyev.af_rot_v[0];
+		af_v[1] = eyev.af_rot_v[1];
+		af_v[2] = eyev.af_rot_v[2];
+		af_pos[0] = eyev.af_pos[0];
+		af_pos[1] = eyev.af_pos[1];
+		af_pos[2] = eyev.af_pos[2];
+		f_tl = Abs(eyev.f_tan_left);
+		f_tr = Abs(eyev.f_tan_right);
+		f_tu = Abs(eyev.f_tan_up);
+		f_td = Abs(eyev.f_tan_down);
+	}
+
+	// CRotate3 normalises on construction, so the unnormalised sum above is fine.
+	r3_head = CRotate3<>(f_w, CVector3<>(af_v[0], af_v[1], af_v[2]));
+	v3_head = CVector3<>(af_pos[0], af_pos[1], af_pos[2]);
+	f_tan_h = Max(f_tl, f_tr);
+	f_tan_v = Max(f_tu, f_td);
+	return true;
+}
+
 //
 // Class implementations.
 //
@@ -182,48 +267,11 @@ static rptr<CLightAmbient>	pamb;
 			// backdrop by far less than a pixel, which is the same reasoning that makes one shared
 			// pass correct in the first place.
 			{
-				RenderVR::SEyeView eyev0, eyev1;
-				bool b_0 = RenderVR::bEyeView(0, eyev0);
-				bool b_1 = RenderVR::bEyeView(1, eyev1);
-
-				if (b_0 || b_1)
+				CRotate3<> r3_head;
+				CVector3<> v3_head;
+				float f_tan_h, f_tan_v;
+				if (bSharedHeadPose(r3_head, v3_head, f_tan_h, f_tan_v))
 				{
-					float f_w, af_v[3];
-
-					if (b_0 && b_1)
-					{
-						// Average the two eye orientations rather than taking eye 0's: on a canted
-						// headset (Index, Vive Pro) the panels are physically angled outward, so
-						// either eye alone points several degrees off the head's own direction and
-						// the sky would sit visibly askew.
-						//
-						// Align the signs first - q and -q are the same rotation, so summing them
-						// blind can cancel instead of blend.
-						float f_dot = eyev0.f_rot_w     * eyev1.f_rot_w
-						            + eyev0.af_rot_v[0] * eyev1.af_rot_v[0]
-						            + eyev0.af_rot_v[1] * eyev1.af_rot_v[1]
-						            + eyev0.af_rot_v[2] * eyev1.af_rot_v[2];
-						float f_sign = (f_dot < 0.0f) ? -1.0f : 1.0f;
-
-						f_w     = eyev0.f_rot_w     + f_sign * eyev1.f_rot_w;
-						af_v[0] = eyev0.af_rot_v[0] + f_sign * eyev1.af_rot_v[0];
-						af_v[1] = eyev0.af_rot_v[1] + f_sign * eyev1.af_rot_v[1];
-						af_v[2] = eyev0.af_rot_v[2] + f_sign * eyev1.af_rot_v[2];
-					}
-					else
-					{
-						// Only one eye has a tracked pose this frame - a few degrees of cant beats
-						// no head rotation at all.
-						const RenderVR::SEyeView& eyev = b_0 ? eyev0 : eyev1;
-						f_w     = eyev.f_rot_w;
-						af_v[0] = eyev.af_rot_v[0];
-						af_v[1] = eyev.af_rot_v[1];
-						af_v[2] = eyev.af_rot_v[2];
-					}
-
-					// CRotate3 normalises on construction, so the unnormalised sum above is fine.
-					CRotate3<> r3_head(f_w, CVector3<>(af_v[0], af_v[1], af_v[2]));
-
 					// Head first, then body - the same convention as the eye loop (Rotate.hpp:
 					// a*b means "apply a, then b").
 					pr3_backdrop.r3Rot = r3_head * pr3_backdrop.r3Rot;
@@ -329,51 +377,77 @@ static rptr<CLightAmbient>	pamb;
 		// Start the timer.
 		CCycleTimer	ctmr;
 
+		// ⚠ VR OCCLUSION - FIXED 2026-07-25 (was: geometry vanishing when the head faced the same
+		// way as the body).  The occlusion list is built once and baked into a camera's space by
+		// CopyOccludePolygons (via cam.tf3ToNormalisedCamera), then reused by both eyes when they
+		// RenderScene below.  Built from the body camera it culls from the wrong place the moment
+		// the head turns away from the body - distant terrain and small objects (crates) vanish,
+		// which handing the eye loop an EMPTY occluder array made stop completely.
+		//
+		// The cure is to build the list from a HEAD-COMPOSED camera.  It stays ONE build shared by
+		// both eyes - six centimetres of IPD is sub-pixel parallax here, so it was only ever the
+		// head ROTATION that was wrong (disabling occlusion outright is NOT the answer: measured
+		// with it off, the heaviest frames went 8.3 ms -> 13.9 ms).  Head CENTRE, combined FOV: the
+		// list must cover everything EITHER eye will draw.  Off VR bSharedHeadPose returns false and
+		// this is byte-for-byte the original body-camera path.
+		CRotate3<> r3_occ_head;
+		CVector3<> v3_occ_head;
+		float f_occ_tan_h = 0.0f, f_occ_tan_v = 0.0f;
+		bool  b_occ_head = bSharedHeadPose(r3_occ_head, v3_occ_head, f_occ_tan_h, f_occ_tan_v);
+
+		CCamera::SProperties camprop_occ = wqcam.tGet()->campropGetProperties();
+		CPresence3<>         pr3_occ     = wqcam.tGet()->pr3VPresence();
+		if (b_occ_head)
+		{
+			// Room-scale lean is rotated into world by the BODY rotation (set the position BEFORE
+			// composing the head in, exactly as the eye loop does); the head rotation then composes
+			// on top.
+			pr3_occ.v3Pos += v3_occ_head * pr3_occ.r3Rot;
+			pr3_occ.r3Rot  = r3_occ_head * pr3_occ.r3Rot;
+
+			// Widen the frustum to the combined field of view of both eyes so the candidates cover
+			// the whole rendered field.  Same zoom fold-in as the eye loop (the engine divides
+			// rViewWidth by the zoom when it builds the projection).
+			if (f_occ_tan_h > 0.0f && f_occ_tan_v > 0.0f)
+			{
+				camprop_occ.rViewWidth   = f_occ_tan_h * camprop_occ.fZoomFactor;
+				camprop_occ.fAspectRatio = f_occ_tan_h / f_occ_tan_v;
+			}
+		}
+
+		// The head-composed camera in VR; off VR the ordinary active camera, untouched.
+		CCamera        cam_occ_head(pr3_occ, camprop_occ);
+		const CCamera& cam_occ = b_occ_head ? cam_occ_head : *wqcam.tGet();
+
 		// Build an occlusion list.
 		if (COcclude::bBuildOcclusionList())
 		{
 			// This is a good time to reset the heap used for occlusion data.
 			COcclude::Reset();
 
-			// Get the inverse presence of the camera.
-			pr3_inv_cam = ~wqcam.tGet()->pr3Presence();
+			// Get the inverse presence of the (head-composed) camera.
+			pr3_inv_cam = ~cam_occ.pr3Presence();
 
 			// Get a list from the world database.
 			GetOccludePolygons
 			(
 				wDBase.ppartPartitionList(),	// Root partition node.
 				pr3_inv_cam,					// Inverse camera presence.
-				wqcam.tGet()->pbvBoundingVol(),	// Camera bounding volume.
+				cam_occ.pbvBoundingVol(),		// Camera bounding volume.
 				oclist							// Linked list of visible occluding objects.
 			);
 		}
-		
+
 		// Create an array of occluding polygon objects.
 		CLArray(COcclude*, papoc, oclist.size());
 
-		// Copy the list to the array.
-		CopyOccludePolygons(papoc, *wqcam.tGet(), oclist);
+		// Copy the list to the array, baked into the head-composed camera's space.
+		CopyOccludePolygons(papoc, cam_occ, oclist);
 
 		// Set stats for occlusion.
 		TCycles cy_get_list = ctmr();
 		psOcclusionGetList.Add(cy_get_list, oclist.size());
 		proProfile.psOcclusion.Add(cy_get_list, 1);
-
-		// ⚠ KNOWN VR BUG, CONFIRMED 2026-07-25 - THE OCCLUDERS ABOVE ARE BUILT FROM THE BODY.
-		// In VR, geometry vanishes when the head looks the SAME way as the body and renders
-		// correctly when it looks away; distant terrain and small objects (crates) worst, near
-		// terrain and trees fine.  Proved by handing the eye loop an EMPTY occluder array: the
-		// vanishing stopped completely.
-		//
-		// Cause: the list is built from the body camera and transformed into BODY camera space
-		// (CopyOccludePolygons above), then applied to an eye camera that differs by the head
-		// rotation, half an IPD, and the seated room-scale offset.  Look away from the body's
-		// facing and the occluders cull nothing; look along it and they cull from the wrong place.
-		//
-		// FIX (not yet written): build this list from the HEAD-composed camera.  It can still be
-		// built ONCE and shared by both eyes - six centimetres of IPD really is negligible here;
-		// it was only ever the head ROTATION that was wrong.  Do NOT simply disable occlusion:
-		// measured with it off, the heaviest frames went 8.3 ms -> 13.9 ms.
 
 		// Render the scene.
 		wDBase.Lock();
