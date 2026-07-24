@@ -28,3 +28,6 @@ texture_export/*
 !texture_export/README.md
 tex_dump/
 texture_sizes.txt
+
+# Claude Code session data and the VR worktree, which lives inside the repo.
+.claude/

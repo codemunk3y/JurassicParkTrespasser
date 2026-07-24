@@ -276,6 +276,19 @@ CVector3<>	CSkyRender::av3FrustTran[u4NUM_SKY_TRANSFORM_VERT];
 CVector3<>	CSkyRender::v3Camera;
 
 
+//**********************************************************************************************
+// VR: camera the sky should orient from instead of the world database's active one.  Null in
+// every non-VR build and on every flat frame, so the normal lookup is unchanged.
+//
+const CCamera*	CSkyRender::pcamOverride = 0;
+
+//**********************************************************************************************
+void CSkyRender::SetCameraOverride(const CCamera* pcam)
+{
+	pcamOverride = pcam;
+}
+
+
 
 //**********************************************************************************************
 // Constructor requires a source sky bitmap and a destination render surface,
@@ -3722,8 +3735,12 @@ void CSkyRender::SetTransformedCameraCorners()
 //**************************************
 {
 	// Query the world database to get the current active camera.
+	//
+	// VR: unless an override has been supplied.  This lookup is the reason the sky ignored the
+	// per-eye cameras and stayed pinned to the headset - it never looked at the camera the
+	// render was actually given.
 	CWDbQueryActiveCamera wqcam(wWorld);
-	CCamera* pcam = wqcam.tGet();
+	const CCamera* pcam = pcamOverride ? pcamOverride : wqcam.tGet();
 	Assert(pcam);
 
 	// Construct an inverse transform for the camera.

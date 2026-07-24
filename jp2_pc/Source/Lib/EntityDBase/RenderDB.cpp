@@ -170,7 +170,87 @@ static rptr<CLightAmbient>	pamb;
 			// Create a camera with a much farther clipping plane.
 			CCamera::SProperties camprop = wqcam.tGet()->campropGetProperties();
 			camprop.rFarClipPlaneDist = 20000.0f;
-			CCamera cam_backdrop(wqcam.tGet()->pr3VPresence(), camprop);
+			CPresence3<> pr3_backdrop = wqcam.tGet()->pr3VPresence();
+
+			// HEAD TRACKING.  Sharing one backdrop pass between the eyes is an argument about the
+			// six centimetres BETWEEN them - it says nothing about the head, which can turn ninety
+			// degrees away from the body.  Drawing this from the body presence leaves the sky
+			// pinned to the screen, so it appears glued to the headset and slides with every head
+			// movement.  The pass stays shared; it just has to be aimed where the head is looking.
+			//
+			// Orientation only: at a 20000-unit far clip the room-scale head offset moves the
+			// backdrop by far less than a pixel, which is the same reasoning that makes one shared
+			// pass correct in the first place.
+			{
+				RenderVR::SEyeView eyev0, eyev1;
+				bool b_0 = RenderVR::bEyeView(0, eyev0);
+				bool b_1 = RenderVR::bEyeView(1, eyev1);
+
+				if (b_0 || b_1)
+				{
+					float f_w, af_v[3];
+
+					if (b_0 && b_1)
+					{
+						// Average the two eye orientations rather than taking eye 0's: on a canted
+						// headset (Index, Vive Pro) the panels are physically angled outward, so
+						// either eye alone points several degrees off the head's own direction and
+						// the sky would sit visibly askew.
+						//
+						// Align the signs first - q and -q are the same rotation, so summing them
+						// blind can cancel instead of blend.
+						float f_dot = eyev0.f_rot_w     * eyev1.f_rot_w
+						            + eyev0.af_rot_v[0] * eyev1.af_rot_v[0]
+						            + eyev0.af_rot_v[1] * eyev1.af_rot_v[1]
+						            + eyev0.af_rot_v[2] * eyev1.af_rot_v[2];
+						float f_sign = (f_dot < 0.0f) ? -1.0f : 1.0f;
+
+						f_w     = eyev0.f_rot_w     + f_sign * eyev1.f_rot_w;
+						af_v[0] = eyev0.af_rot_v[0] + f_sign * eyev1.af_rot_v[0];
+						af_v[1] = eyev0.af_rot_v[1] + f_sign * eyev1.af_rot_v[1];
+						af_v[2] = eyev0.af_rot_v[2] + f_sign * eyev1.af_rot_v[2];
+					}
+					else
+					{
+						// Only one eye has a tracked pose this frame - a few degrees of cant beats
+						// no head rotation at all.
+						const RenderVR::SEyeView& eyev = b_0 ? eyev0 : eyev1;
+						f_w     = eyev.f_rot_w;
+						af_v[0] = eyev.af_rot_v[0];
+						af_v[1] = eyev.af_rot_v[1];
+						af_v[2] = eyev.af_rot_v[2];
+					}
+
+					// CRotate3 normalises on construction, so the unnormalised sum above is fine.
+					CRotate3<> r3_head(f_w, CVector3<>(af_v[0], af_v[1], af_v[2]));
+
+					// Head first, then body - the same convention as the eye loop (Rotate.hpp:
+					// a*b means "apply a, then b").
+					pr3_backdrop.r3Rot = r3_head * pr3_backdrop.r3Rot;
+				}
+			}
+
+			CCamera cam_backdrop(pr3_backdrop, camprop);
+
+			// The SKY is a separate pass from the backdrop geometry above, and it does not use
+			// the camera it is handed - CSkyRender::SetTransformedCameraCorners asks the world
+			// database for the ACTIVE camera, which is the body's.  This override is how you
+			// reach it at all.
+			//
+			// ⚠ THIS DOES NOT FIX THE SKY YET (2026-07-25).  With this composition it moved
+			// OPPOSITE to yaw and pitch; with the rotation inverted it moved WITH the head; roll
+			// did nothing either way.  Neither is world-stable, so the error is not a simple sign
+			// flip and the model of this pipeline is still incomplete.  Re-tested after the Ctrl+R
+			// recentre lined the view up with the body - the sky still followed the headset, so
+			// the 90-degree head/body offset was not the cause either.
+			//
+			// RECOMMENDED FIX: stop patching the capture-and-blit path and draw the sky as real
+			// GEOMETRY - a plane or dome at CSkyRender::fSkyHeight, projected per eye like
+			// everything else.  Under D3D11 the sky is currently software-rasterised into the main
+			// raster and then blitted FULL-SCREEN with a shader that has no camera in it, so it is
+			// a flat photograph pasted over the view: no depth, no stereo, and no way to represent
+			// roll.  The 1998 reason for doing it that way (no GPU) no longer applies.
+			CSkyRender::SetCameraOverride(&cam_backdrop);
 
 			// Get pointer to the settings.
 			ptr<CRenderer::SSettings>     prenset   = msgpaint.renContext.pSettings;
@@ -230,6 +310,10 @@ static rptr<CLightAmbient>	pamb;
 			// Reset the render settings.
 			*prenset = renset;
 
+			// Stop overriding the sky's camera - cam_backdrop is about to go out of scope, and
+			// every later pass (and every flat frame) must use the normal active-camera lookup.
+			CSkyRender::SetCameraOverride(0);
+
 			// Unlock the main buffer.
 			prasMainScreen->Unlock();
 		}
@@ -274,6 +358,22 @@ static rptr<CLightAmbient>	pamb;
 		TCycles cy_get_list = ctmr();
 		psOcclusionGetList.Add(cy_get_list, oclist.size());
 		proProfile.psOcclusion.Add(cy_get_list, 1);
+
+		// ⚠ KNOWN VR BUG, CONFIRMED 2026-07-25 - THE OCCLUDERS ABOVE ARE BUILT FROM THE BODY.
+		// In VR, geometry vanishes when the head looks the SAME way as the body and renders
+		// correctly when it looks away; distant terrain and small objects (crates) worst, near
+		// terrain and trees fine.  Proved by handing the eye loop an EMPTY occluder array: the
+		// vanishing stopped completely.
+		//
+		// Cause: the list is built from the body camera and transformed into BODY camera space
+		// (CopyOccludePolygons above), then applied to an eye camera that differs by the head
+		// rotation, half an IPD, and the seated room-scale offset.  Look away from the body's
+		// facing and the occluders cull nothing; look along it and they cull from the wrong place.
+		//
+		// FIX (not yet written): build this list from the HEAD-composed camera.  It can still be
+		// built ONCE and shared by both eyes - six centimetres of IPD really is negligible here;
+		// it was only ever the head ROTATION that was wrong.  Do NOT simply disable occlusion:
+		// measured with it off, the heaviest frames went 8.3 ms -> 13.9 ms.
 
 		// Render the scene.
 		wDBase.Lock();
@@ -340,6 +440,16 @@ static rptr<CLightAmbient>	pamb;
 					float f_tan_h = Max(Abs(eyev.f_tan_left), Abs(eyev.f_tan_right));
 					float f_tan_v = Max(Abs(eyev.f_tan_up),   Abs(eyev.f_tan_down));
 
+					// NB the frustum aspect here does NOT match the eye texture's (measured on an
+					// Index: 1.0896 against 2468x2740 = 0.9007).  Expanding the short axis to make
+					// them agree was tried on 2026-07-25 and REVERTED: the numbers came out exactly
+					// right and the reported distortion was unchanged, so the mismatch - though real
+					// - is not what the user is seeing.  The symptom is a SHEAR ("square pixels look
+					// like diamonds", correct at ~45 degrees of roll, wrong at 0), and a shear cannot
+					// be produced by an anisotropic scale.  Suspect the projection's CShear3<>('y')
+					// and CViewport::vcOriginX/Y (the centre-of-projection offset) instead.  The
+					// expansion also grew the vertical field 21%, beyond what the occlusion list was
+					// built for, which may have been causing missing geometry.
 					if (f_tan_h > 0.0f && f_tan_v > 0.0f)
 					{
 						// rViewWidth is the tangent of the half view angle, but the engine
@@ -355,6 +465,32 @@ static rptr<CLightAmbient>	pamb;
 						// Tell the VR layer what it is about to be given, so the projection layer
 						// describes this frustum rather than the runtime's.
 						RenderVR::SetRenderedFov(i_eye, -f_tan_h, f_tan_h, f_tan_v, -f_tan_v);
+
+						// DIAGNOSTIC (skew on pitch/roll).  The frustum we render is stretched to
+						// fill the whole eye texture, so its aspect must match that texture's pixel
+						// aspect or the image carries a fixed anisotropic stretch.  Head-level that
+						// is nearly invisible; roll the head and it shears, because the stretch axis
+						// stops lining up with the world's vertical.  Log both once per eye and
+						// compare - if these two numbers differ, that is the bug.
+						{
+							static bool ab_logged[2] = { false, false };
+							if (i_eye >= 0 && i_eye < 2 && !ab_logged[i_eye])
+							{
+								ab_logged[i_eye] = true;
+
+								int i_tex_w = RenderVR::iRecommendedEyeWidth();
+								int i_tex_h = RenderVR::iRecommendedEyeHeight();
+
+								char buf[256];
+								sprintf(buf,
+									"TRESPASS_VR: eye %d frustum tan h=%.4f v=%.4f aspect=%.4f | "
+									"texture %dx%d aspect=%.4f\n",
+									i_eye, f_tan_h, f_tan_v, f_tan_h / f_tan_v,
+									i_tex_w, i_tex_h,
+									(i_tex_h > 0) ? ((float)i_tex_w / (float)i_tex_h) : 0.0f);
+								RenderVR::LogLine(buf);
+							}
+						}
 					}
 				}
 				else

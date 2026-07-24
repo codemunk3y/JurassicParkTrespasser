@@ -422,6 +422,29 @@ protected:
 
 	//******************************************************************************************
 	static CVector3<>	v3Camera;
+
+public:
+
+	//******************************************************************************************
+	//
+	// VR HEAD TRACKING.  The sky orients itself by asking the world database for the ACTIVE
+	// camera (SetTransformedCameraCorners), so handing a different camera to RenderScene does
+	// not reach it - the per-eye head-composed cameras are stack temporaries that are never
+	// written back, and the sky never sees them.  It therefore follows the body and appears
+	// glued to the headset.
+	//
+	// Set this to a camera the sky should orient from instead; null restores the normal
+	// active-camera lookup.  The pointer is borrowed, not owned, and must outlive the draw.
+	//
+	// One shared sky draw stays correct for both eyes: the sky is at infinity, so there is no
+	// translation parallax between them - only the ROTATION was ever wrong.
+	//
+	static void SetCameraOverride(const class CCamera* pcam);
+
+private:
+
+	//******************************************************************************************
+	static const class CCamera* pcamOverride;
 };
 
 
