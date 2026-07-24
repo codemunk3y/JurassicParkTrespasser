@@ -209,7 +209,15 @@ PIXEL_LOOP:
 		for (int i_x = -i_width; i_x != 0; ++i_x)
 		{
 			// Transform the pixel.
-			pu2[i_x] = au2_clut[pu2[i_x] & 0x01FF] /*& u2_mask*/;
+			//
+			// The mask is THIRTEEN bits, not nine.  Both assembler paths above mask with
+			// 0x1fff (three places); this fallback masked with 0x01ff, wrapping the clut
+			// index at 512 entries instead of 8192 and fetching the wrong colour for every
+			// pixel above that.  The bug was harmless for twenty years because VER_ASM was
+			// always true and this branch never ran - x64 is the first build to execute it.
+			// Found independently upstream (OpenTrespasser dev, 745625f, 2021-07-31), which
+			// also added unit tests for this routine.
+			pu2[i_x] = au2_clut[pu2[i_x] & 0x1FFF] /*& u2_mask*/;
 		}
 	}
 
