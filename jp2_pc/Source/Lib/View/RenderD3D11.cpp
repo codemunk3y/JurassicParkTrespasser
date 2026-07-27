@@ -1260,7 +1260,14 @@ namespace RenderD3D11
 		vp.MinDepth = 0.0f; vp.MaxDepth = 1.0f;
 		s_pd3dContext->RSSetViewports(1, &vp);
 
-		const float af_clear[4] = { s_clear_r, s_clear_g, s_clear_b, 1.0f };
+		// Clear the eye image to BLACK, not the sky fog colour.  The rendered frame is letterboxed
+		// into the eye texture (the CPU pipeline projects at the desktop window's aspect, the eye
+		// texture is a different, taller shape), so a wide border is left around the viewport.  The
+		// sky blit and geometry cover the viewport, so this clear colour only ever shows in that
+		// border - and in a dark headset a fog-coloured (often near-white) border glows in the
+		// periphery and bleeds.  Black makes the dead area disappear.  (The desktop mirror keeps the
+		// fog clear; cropping the border away entirely belongs with the projection/aspect work.)
+		const float af_clear[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
 		s_pd3dContext->ClearRenderTargetView(p_rtv, af_clear);
 		// Depth cleared to 0 (far); closer fragments have larger rhw and win via GEQUAL.
 		s_pd3dContext->ClearDepthStencilView(s_pEyeDSV, D3D11_CLEAR_DEPTH, 0.0f, 0);
