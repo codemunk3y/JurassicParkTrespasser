@@ -79,12 +79,20 @@ namespace
 	ID3D11VertexShader*      s_pSkyVS         = 0;
 	ID3D11PixelShader*       s_pSkyPS         = 0;
 	ID3D11DepthStencilState* s_pSkyDepthState = 0;	// no depth test/write for the sky
-	ID3D11Texture2D*         s_pSkyImgTex     = 0;	// dynamic, screen-sized sky image
-	ID3D11ShaderResourceView* s_pSkyImgSRV    = 0;
-	int                      s_sky_img_w      = 0;
-	int                      s_sky_img_h      = 0;
-	bool                     s_b_sky_565      = false;	// sky texture is B5G6R5, not BGRA
-	bool                     s_sky_valid      = false;	// SetSkyImage called this frame
+
+	// The sky image is now captured PER EYE.  A single shared image, blitted full-screen into
+	// both eyes, cannot be right for a head that has turned: the sky is projected once from one
+	// camera while each eye's world is projected from its own, so the two slide apart as the head
+	// moves (VR bug #2).  Each eye now gets a sky rasterised from its own camera, so sky and world
+	// track together.  Mono captures slot 0 only; DrawEye_ falls back to slot 0 when an eye has no
+	// image of its own (mono, or a shared i_EYE_ALL capture).
+	const int                k_i_max_eyes     = 2;
+	ID3D11Texture2D*         s_apSkyImgTex[2] = { 0, 0 };	// dynamic, screen-sized sky image, per eye
+	ID3D11ShaderResourceView* s_apSkyImgSRV[2] = { 0, 0 };
+	int                      s_a_sky_img_w[2] = { 0, 0 };
+	int                      s_a_sky_img_h[2] = { 0, 0 };
+	bool                     s_a_sky_565[2]   = { false, false };	// sky texture is B5G6R5, not BGRA
+	bool                     s_a_sky_valid[2] = { false, false };	// SetSkyImage called this frame, per eye
 
 	int   s_i_enabled    = -1;
 	bool  s_b_init_tried = false;
@@ -780,8 +788,12 @@ namespace
 		if (s_pEyeDSV)        { s_pEyeDSV->Release();        s_pEyeDSV        = 0; }
 		if (s_pEyeDepthTex)   { s_pEyeDepthTex->Release();   s_pEyeDepthTex   = 0; s_eye_depth_w = s_eye_depth_h = 0; }
 		if (s_pCaptureTex)    { s_pCaptureTex->Release();    s_pCaptureTex    = 0; s_b_capture_ok = false; }
-		if (s_pSkyImgSRV)     { s_pSkyImgSRV->Release();     s_pSkyImgSRV     = 0; }
-		if (s_pSkyImgTex)     { s_pSkyImgTex->Release();     s_pSkyImgTex     = 0; s_sky_img_w = s_sky_img_h = 0; }
+		for (int e = 0; e < k_i_max_eyes; ++e)
+		{
+			if (s_apSkyImgSRV[e]) { s_apSkyImgSRV[e]->Release(); s_apSkyImgSRV[e] = 0; }
+			if (s_apSkyImgTex[e]) { s_apSkyImgTex[e]->Release(); s_apSkyImgTex[e] = 0; s_a_sky_img_w[e] = s_a_sky_img_h[e] = 0; }
+			s_a_sky_valid[e] = false;
+		}
 		if (s_pSkyDepthState) { s_pSkyDepthState->Release(); s_pSkyDepthState = 0; }
 		if (s_pSkyPS)         { s_pSkyPS->Release();         s_pSkyPS         = 0; }
 		if (s_pSkyVS)         { s_pSkyVS->Release();         s_pSkyVS         = 0; }
@@ -850,34 +862,40 @@ namespace RenderD3D11
 	{
 		if (!s_pd3dDevice || i_w < 1 || i_h < 1) return;
 
+		// Which eye is this capture for?  ClearMemSurfaces draws and captures the sky inside the
+		// current eye's RenderScene, so s_i_eye names the slot.  Mono and the shared i_EYE_ALL
+		// pass land in slot 0, which DrawEye_ uses as the fallback for any eye without its own.
+		int e = (s_i_eye == i_EYE_ALL || s_i_eye < 0) ? 0
+		      : (s_i_eye >= k_i_max_eyes ? k_i_max_eyes - 1 : s_i_eye);
+
 		// (Re)create the dynamic sky texture on first use, or a resolution/format change.
-		if (!s_pSkyImgTex || s_sky_img_w != i_w || s_sky_img_h != i_h || s_b_sky_565 != b_565)
+		if (!s_apSkyImgTex[e] || s_a_sky_img_w[e] != i_w || s_a_sky_img_h[e] != i_h || s_a_sky_565[e] != b_565)
 		{
-			if (s_pSkyImgSRV) { s_pSkyImgSRV->Release(); s_pSkyImgSRV = 0; }
-			if (s_pSkyImgTex) { s_pSkyImgTex->Release(); s_pSkyImgTex = 0; }
+			if (s_apSkyImgSRV[e]) { s_apSkyImgSRV[e]->Release(); s_apSkyImgSRV[e] = 0; }
+			if (s_apSkyImgTex[e]) { s_apSkyImgTex[e]->Release(); s_apSkyImgTex[e] = 0; }
 			D3D11_TEXTURE2D_DESC td; ZeroMemory(&td, sizeof(td));
 			td.Width = i_w; td.Height = i_h; td.MipLevels = 1; td.ArraySize = 1;
 			td.Format = b_565 ? DXGI_FORMAT_B5G6R5_UNORM : DXGI_FORMAT_B8G8R8A8_UNORM;
 			td.SampleDesc.Count = 1;
 			td.Usage = D3D11_USAGE_DYNAMIC; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 			td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-			if (FAILED(s_pd3dDevice->CreateTexture2D(&td, 0, &s_pSkyImgTex)) || !s_pSkyImgTex) { s_pSkyImgTex = 0; return; }
-			if (FAILED(s_pd3dDevice->CreateShaderResourceView(s_pSkyImgTex, 0, &s_pSkyImgSRV))) { s_pSkyImgTex->Release(); s_pSkyImgTex = 0; return; }
-			s_sky_img_w = i_w; s_sky_img_h = i_h; s_b_sky_565 = b_565;
+			if (FAILED(s_pd3dDevice->CreateTexture2D(&td, 0, &s_apSkyImgTex[e])) || !s_apSkyImgTex[e]) { s_apSkyImgTex[e] = 0; return; }
+			if (FAILED(s_pd3dDevice->CreateShaderResourceView(s_apSkyImgTex[e], 0, &s_apSkyImgSRV[e]))) { s_apSkyImgTex[e]->Release(); s_apSkyImgTex[e] = 0; return; }
+			s_a_sky_img_w[e] = i_w; s_a_sky_img_h[e] = i_h; s_a_sky_565[e] = b_565;
 		}
 
 		// Upload this frame's sky pixels (row by row - the map pitch may exceed the row).
 		D3D11_MAPPED_SUBRESOURCE ms;
-		if (SUCCEEDED(s_pd3dContext->Map(s_pSkyImgTex, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms)))
+		if (SUCCEEDED(s_pd3dContext->Map(s_apSkyImgTex[e], 0, D3D11_MAP_WRITE_DISCARD, 0, &ms)))
 		{
 			const unsigned char* p_src = (const unsigned char*)pv_src;
 			unsigned char*       p_dst = (unsigned char*)ms.pData;
 			size_t               u_row = (size_t)i_w * (b_565 ? 2 : 4);
 			for (int y = 0; y < i_h; ++y)
 				memcpy(p_dst + (size_t)y * ms.RowPitch, p_src + (size_t)y * i_src_pitch, u_row);
-			s_pd3dContext->Unmap(s_pSkyImgTex, 0);
+			s_pd3dContext->Unmap(s_apSkyImgTex[e], 0);
 		}
-		s_sky_valid = true;
+		s_a_sky_valid[e] = true;
 	}
 
 	void SetSkyImage(int i_w, int i_h, const unsigned int* pu4_bgra)
@@ -1463,11 +1481,12 @@ namespace RenderD3D11
 		const bool b_detile = s_pDetilePS && s_f_detile_strength > 0.0f;
 
 		// Sky pass first, behind everything (no depth test/write): a 1:1 blit of the software
-		// sky image captured this frame.  Geometry draws over it.  It is drawn per eye because
-		// it fills whatever viewport is current, and each eye is a different rectangle.  The
-		// image itself is the same for both - the sky is at effective infinity, so it has no
-		// stereo parallax to lose.
-		if (s_sky_valid && s_pSkyVS && s_pSkyPS && s_pSkyDepthState && s_pSkyImgSRV)
+		// sky image captured this frame.  Geometry draws over it.  Each eye blits its OWN captured
+		// sky (drawn from that eye's camera), which is what makes the sky track the world instead
+		// of sliding with the head (VR bug #2).  An eye with no image of its own - mono, or a
+		// shared i_EYE_ALL capture - falls back to slot 0.
+		int i_sky_slot = (i_eye >= 0 && i_eye < k_i_max_eyes && s_a_sky_valid[i_eye]) ? i_eye : 0;
+		if (s_a_sky_valid[i_sky_slot] && s_pSkyVS && s_pSkyPS && s_pSkyDepthState && s_apSkyImgSRV[i_sky_slot])
 		{
 			s_pd3dContext->OMSetDepthStencilState(s_pSkyDepthState, 0);
 			s_pd3dContext->IASetInputLayout(0);
@@ -1477,7 +1496,7 @@ namespace RenderD3D11
 			s_pd3dContext->VSSetShader(s_pSkyVS, 0, 0);
 			s_pd3dContext->PSSetShader(s_pSkyPS, 0, 0);
 			s_pd3dContext->PSSetSamplers(0, 1, &s_pSampClamp);
-			s_pd3dContext->PSSetShaderResources(0, 1, &s_pSkyImgSRV);
+			s_pd3dContext->PSSetShaderResources(0, 1, &s_apSkyImgSRV[i_sky_slot]);
 			s_pd3dContext->Draw(3, 0);
 			s_pd3dContext->OMSetDepthStencilState(s_pDepthState, 0);	// restore for geometry
 		}
@@ -1569,7 +1588,7 @@ namespace RenderD3D11
 
 		HRESULT hr_present = s_pSwapChain->Present(0, 0);
 		s_frame_open   = false;			// frame consumed; next bBeginFrame starts a fresh one
-		s_sky_valid    = false;			// require SetSkyImage again next frame (else no sky)
+		s_a_sky_valid[0] = s_a_sky_valid[1] = false;	// require SetSkyImage again next frame (else no sky)
 		s_i_frame_eyes = 1;				// next frame re-declares its eye count via SetEye
 
 		// ---- Diagnostic: peak vertex/upload counts + device-removed state -------------------

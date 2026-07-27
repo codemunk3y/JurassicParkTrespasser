@@ -285,19 +285,15 @@ static bool bSharedHeadPose
 			// database for the ACTIVE camera, which is the body's.  This override is how you
 			// reach it at all.
 			//
-			// ⚠ THIS DOES NOT FIX THE SKY YET (2026-07-25).  With this composition it moved
-			// OPPOSITE to yaw and pitch; with the rotation inverted it moved WITH the head; roll
-			// did nothing either way.  Neither is world-stable, so the error is not a simple sign
-			// flip and the model of this pipeline is still incomplete.  Re-tested after the Ctrl+R
-			// recentre lined the view up with the body - the sky still followed the headset, so
-			// the 90-degree head/body offset was not the cause either.
-			//
-			// RECOMMENDED FIX: stop patching the capture-and-blit path and draw the sky as real
-			// GEOMETRY - a plane or dome at CSkyRender::fSkyHeight, projected per eye like
-			// everything else.  Under D3D11 the sky is currently software-rasterised into the main
-			// raster and then blitted FULL-SCREEN with a shader that has no camera in it, so it is
-			// a flat photograph pasted over the view: no depth, no stereo, and no way to represent
-			// roll.  The 1998 reason for doing it that way (no GPU) no longer applies.
+			// VR bug #2 (sky glued to the headset) - FIXED 2026-07-28.  The earlier attempt drew
+			// the sky ONCE here, from this shared camera, and blitted that single image into both
+			// eyes; it could never be world-stable, because the sky was projected from one camera
+			// while each eye's world was projected from its own, so the two slid apart as the head
+			// turned.  The fix draws and captures the sky PER EYE, from each eye's own camera, in
+			// the main eye loop below (search "PER-EYE SKY").  Under D3D11 the sky is therefore no
+			// longer drawn in this pass at all (bDrawSky is forced false around the RenderScene
+			// call).  This override still matters for the SOFTWARE renderer, whose only sky pass is
+			// this one.
 			CSkyRender::SetCameraOverride(&cam_backdrop);
 
 			// Get pointer to the settings.
@@ -335,6 +331,18 @@ static bool bSharedHeadPose
 				srd3dRenderer.SetOutputFlag(false);
 			}
 
+			// SKY (D3D11): the sky is no longer drawn here.  Under D3D11 it is captured per eye in
+			// the main eye loop below, from each eye's own camera, so that it tracks the world
+			// instead of sliding with the head (VR bug #2).  Drawing it here as well would just be a
+			// full extra sky rasterisation whose capture the eye loop immediately overwrites.  The
+			// software path keeps the sky here (this pass is its only sky), so gate on the D3D11
+			// device actually being up (bActive, not bEnabled): the device is created lazily during
+			// this very pass on the first frame, and until it is the software raster is still what
+			// gets presented, so the sky must stay here for that window.
+			CScreenRender::SSettings screnset_bd = *msgpaint.renContext.pScreenRender->pSettings;
+			if (RenderD3D11::bActive())
+				msgpaint.renContext.pScreenRender->pSettings->bDrawSky = false;
+
 			// Lock and render.
 			wDBase.Lock();
 			CLArray(COcclude*, papoc, 0);	// Use a dummy occlusion list.
@@ -348,6 +356,9 @@ static bool bSharedHeadPose
 				0								// Us no terrain.
 			);
 			wDBase.Unlock();
+
+			// Restore the sky setting for the passes that follow.
+			*msgpaint.renContext.pScreenRender->pSettings = screnset_bd;
 
 			// Reenable Z buffering.
 			if (d3dDriver.bUseD3D())
@@ -581,10 +592,39 @@ static bool bSharedHeadPose
 
 				CCamera cam(pr3_eye, camprop);
 
-				// Toggle the clear off.
+				// PER-EYE SKY (D3D11) - the fix for VR bug #2 (sky glued to the headset).  The sky
+				// is not 3D geometry; the software rasteriser draws it into the raster and the GPU
+				// blits that image full-screen behind the scene.  A single shared image cannot be
+				// right once the head turns: the sky is projected from one camera while each eye's
+				// world is projected from its own, so the two slide apart.  Draw and capture the sky
+				// from THIS eye's camera instead, so sky and world share a projection and track
+				// together.  RenderD3D11 stores the capture in the current eye's slot (SetEye above)
+				// and blits it per eye.
+				//
+				// The sky camera keeps the eye's pose and field of view but restores the 20000-unit
+				// far clip the shared backdrop pass always used: the sky's ray directions come from
+				// the far-clip-to-view-width ratio in the normalised-camera transform, so it must be
+				// built the same way or the horizon shifts.  The override is the only way to reach
+				// the sky at all - CSkyRender otherwise re-queries the active (body) camera.
+				//
+				// Off D3D11 (the software renderer, or the pre-device window on the first frame) the
+				// sky stays in the shared backdrop pass above and this whole block is inert:
+				// b_eye_sky is false, so the clear/sky settings and the override are left exactly as
+				// the original code had them.  Gate on bActive (device up), matching the backdrop
+				// pass above, so the software-present path is never handed a sky drawn on top of its
+				// backdrop geometry.
+				const bool b_eye_sky = RenderD3D11::bActive();
+
+				CCamera::SProperties camprop_sky = camprop;
+				camprop_sky.rFarClipPlaneDist = 20000.0f;
+				CCamera cam_sky_eye(pr3_eye, camprop_sky);
+
+				// Toggle the clear off (software), or on so the sky is drawn+captured (D3D11).
 				CScreenRender::SSettings screnset = *msgpaint.renContext.pScreenRender->pSettings;
-				msgpaint.renContext.pScreenRender->pSettings->bClearBackground = false;
-				msgpaint.renContext.pScreenRender->pSettings->bDrawSky         = false;
+				msgpaint.renContext.pScreenRender->pSettings->bClearBackground = b_eye_sky;
+				msgpaint.renContext.pScreenRender->pSettings->bDrawSky         = b_eye_sky;
+				if (b_eye_sky)
+					CSkyRender::SetCameraOverride(&cam_sky_eye);
 
 				// Get the lights whose influence intersects the camera's bounding volume.
 				CWDbQueryLights wqlt(&cam, wDBase);
@@ -600,8 +640,10 @@ static bool bSharedHeadPose
 					(bRenderTerrain) ? (wqtmsh.tGet()) : (0)
 				);
 
-				// Reset the clear.
+				// Reset the clear and stop overriding the sky's camera.
 				*msgpaint.renContext.pScreenRender->pSettings = screnset;
+				if (b_eye_sky)
+					CSkyRender::SetCameraOverride(0);
 			}
 
 			// Leave the backend back in its mono state, so anything drawn outside the eye loop
