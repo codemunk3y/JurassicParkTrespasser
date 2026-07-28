@@ -266,6 +266,17 @@ static bool bSharedHeadPose
 			// Orientation only: at a 20000-unit far clip the room-scale head offset moves the
 			// backdrop by far less than a pixel, which is the same reasoning that makes one shared
 			// pass correct in the first place.
+			//
+			// FIELD OF VIEW matters too, and leaving it out was a real bug: the backdrop is
+			// projected here and REPLAYED into both eyes' viewports (i_EYE_ALL), while the main
+			// world is projected per eye at the eye's WIDE field of view.  Rendering the backdrop
+			// at the default MONO field instead put it at a different angular scale from the world,
+			// so distant backdrop scenery (the horizon haze) slid across the view relative to the
+			// terrain as the head turned - it "followed the headset."  Widen it to the combined
+			// field of both eyes, the same value the occlusion camera uses, so the backdrop and the
+			// world share an angular scale and stay locked together.  The residual eye-to-eye
+			// difference is sub-degree at this distance, the same order as the IPD parallax a shared
+			// pass already ignores.
 			{
 				CRotate3<> r3_head;
 				CVector3<> v3_head;
@@ -275,6 +286,14 @@ static bool bSharedHeadPose
 					// Head first, then body - the same convention as the eye loop (Rotate.hpp:
 					// a*b means "apply a, then b").
 					pr3_backdrop.r3Rot = r3_head * pr3_backdrop.r3Rot;
+
+					// Same zoom fold-in as the eye loop and the occlusion camera (the engine
+					// divides rViewWidth by the zoom when it builds the projection).
+					if (f_tan_h > 0.0f && f_tan_v > 0.0f)
+					{
+						camprop.rViewWidth   = f_tan_h * camprop.fZoomFactor;
+						camprop.fAspectRatio = f_tan_h / f_tan_v;
+					}
 				}
 			}
 
