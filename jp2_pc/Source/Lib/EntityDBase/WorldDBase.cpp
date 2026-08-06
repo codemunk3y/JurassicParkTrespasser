@@ -153,6 +153,7 @@ template<class X> class CMicrosoftsCompilerIsBuggyAndWeHateIt
 #include "Lib/Renderer/Particles.hpp"
 #include "Lib/W95/Direct3D.hpp"
 #include "Lib/Renderer/RenderCache.hpp"
+#include "Lib/View/RenderVR.hpp"			// VR: recentre the headset on each level load
 
 #include <map>
 
@@ -1404,6 +1405,11 @@ CRenderDB*  ps_renderDB = 0;
 		// Send out message informing the system a scene file has finished loading.
 		CMessageSystem msgsys_scn(escSCENE_FILE_LOADED);
 		msgsys_scn.Send();
+
+		// VR: the player is now loaded and placed (start-triggers fire synchronously during the Send
+		// above), so re-arm the headset auto-recentre - the next tracked frame snaps the player to
+		// facing-forward at the camera instead of wherever the headset pointed at session start.
+		RenderVR::OnLevelLoad();
 
 		return true;
 	}

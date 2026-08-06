@@ -162,6 +162,40 @@ namespace
 	// bEyeView.  Stored as (x, y, z, w) in OPENXR axes, identity until Recentre() is called.
 	float s_a_recentre[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
 
+	// POSE ORIGIN (2026-08-06).  The head pose the runtime gives is relative to the reference space
+	// origin, which is NOT where the game wants the eye: with LOCAL it is the session-start head, with
+	// LOCAL_FLOOR the point on the floor under it, and either way the player spawns rotated (measured
+	// 90 degrees) and offset from the game camera - "behind the player model".  Recentre captures the
+	// current head position AND yaw as the neutral origin; bEyeView then reports every pose RELATIVE to
+	// it (subtract this position, then remove the yaw).  So standing at the neutral pose puts the eye
+	// exactly at the game camera, physical movement offsets from there, and a crouch lowers the view
+	// by the real amount.  Stored raw, in OpenXR axes/metres.  Captured automatically on the first
+	// tracked frame after a level load (see s_b_auto_recentred) so the player never spawns off-centre.
+	float s_a_ref_pos[3] = { 0.0f, 0.0f, 0.0f };
+	bool  s_b_auto_recentred = false;			// has the automatic on-load recentre fired yet
+
+	// Which reference space the runtime actually gave us, for the log and to explain the origin.
+	XrReferenceSpaceType s_ref_space_type = XR_REFERENCE_SPACE_TYPE_LOCAL;
+
+	// ---- Controllers / actions --------------------------------------------------------------
+	const int   k_i_hands = 2;					// 0 = left, 1 = right
+	XrActionSet s_action_set   = XR_NULL_HANDLE;
+	XrAction    s_act_pose     = XR_NULL_HANDLE;	// grip pose (per-hand via subaction path)
+	XrAction    s_act_stick    = XR_NULL_HANDLE;	// thumbstick (vector2)
+	XrAction    s_act_trigger  = XR_NULL_HANDLE;	// trigger (float)
+	XrAction    s_act_grip     = XR_NULL_HANDLE;	// squeeze/grip (float)
+	XrAction    s_act_a        = XR_NULL_HANDLE;	// primary button (bool)
+	XrAction    s_act_b        = XR_NULL_HANDLE;	// secondary button (bool)
+	XrAction    s_act_stickclk = XR_NULL_HANDLE;	// thumbstick click (bool)
+	XrPath      s_path_hand[2] = { XR_NULL_PATH, XR_NULL_PATH };		// /user/hand/left, /right
+	XrSpace     s_space_hand[2]= { XR_NULL_HANDLE, XR_NULL_HANDLE };	// grip pose spaces
+	bool        s_b_actions_created  = false;
+	bool        s_b_actions_attached = false;
+
+	// SHandState lives in namespace RenderVR (the public header); these statics are in this file's
+	// anonymous namespace, so it must be named with its full scope here.
+	RenderVR::SHandState s_hand[2] = {};			// cached, refreshed by SyncInput each focused frame
+
 	// Quaternion product a*b, both (x,y,z,w) in OpenXR axes - standard right-handed convention,
 	// NOT the engine's reversed "a then b" operator*.
 	XrQuaternionf qMul(const float* a, const XrQuaternionf& b)
@@ -228,6 +262,7 @@ namespace
 	PFN_xrRequestExitSession            s_xrRequestExitSession = 0;
 	PFN_xrPollEvent                     s_xrPollEvent = 0;
 	PFN_xrCreateReferenceSpace          s_xrCreateReferenceSpace = 0;
+	PFN_xrEnumerateReferenceSpaces      s_xrEnumerateReferenceSpaces = 0;
 	PFN_xrDestroySpace                  s_xrDestroySpace = 0;
 	PFN_xrEnumerateSwapchainFormats     s_xrEnumerateSwapchainFormats = 0;
 	PFN_xrCreateSwapchain               s_xrCreateSwapchain = 0;
@@ -240,6 +275,22 @@ namespace
 	PFN_xrBeginFrame                    s_xrBeginFrame = 0;
 	PFN_xrEndFrame                      s_xrEndFrame = 0;
 	PFN_xrLocateViews                   s_xrLocateViews = 0;
+
+	// Input / actions (controllers).
+	PFN_xrStringToPath                  s_xrStringToPath = 0;
+	PFN_xrCreateActionSet               s_xrCreateActionSet = 0;
+	PFN_xrDestroyActionSet              s_xrDestroyActionSet = 0;
+	PFN_xrCreateAction                  s_xrCreateAction = 0;
+	PFN_xrDestroyAction                 s_xrDestroyAction = 0;
+	PFN_xrSuggestInteractionProfileBindings s_xrSuggestInteractionProfileBindings = 0;
+	PFN_xrAttachSessionActionSets       s_xrAttachSessionActionSets = 0;
+	PFN_xrSyncActions                   s_xrSyncActions = 0;
+	PFN_xrGetActionStateFloat           s_xrGetActionStateFloat = 0;
+	PFN_xrGetActionStateBoolean         s_xrGetActionStateBoolean = 0;
+	PFN_xrGetActionStateVector2f        s_xrGetActionStateVector2f = 0;
+	PFN_xrGetActionStatePose            s_xrGetActionStatePose = 0;
+	PFN_xrCreateActionSpace             s_xrCreateActionSpace = 0;
+	PFN_xrLocateSpace                   s_xrLocateSpace = 0;
 
 	// Fetch an OpenXR function pointer from the instance (or null instance for the bootstrap
 	// three).  Logs and returns false on failure so bInit can bail cleanly.
@@ -449,20 +500,63 @@ namespace
 			return false;
 		}
 
-		// LOCAL space: origin at the pose the runtime considers the app's starting viewpoint,
-		// gravity-aligned.  Seated-scale, which is what a game with its own camera wants -
-		// STAGE space would put the origin on the player's real floor and fight the engine's
-		// camera for control of where "here" is.
+		// Reference space: prefer LOCAL_FLOOR so the player's real floor and standing height come
+		// from the SteamVR room calibration (this is the "standing" experience the player asked for).
+		// LOCAL_FLOOR is like LOCAL - origin under where the headset started, forward = the start
+		// facing, so it does NOT wander the origin to the room centre the way STAGE does - but with
+		// the height pinned to the real floor.  The head's resting height is then reconciled against
+		// the game camera in bEyeView (see s_a_ref_pos), so it doesn't lift the whole view.
+		//
+		// LOCAL_FLOOR is core in OpenXR 1.1 and an extension in 1.0; we request api 1.0, so rather
+		// than assume it exists, enumerate what the runtime offers and pick the best available:
+		// LOCAL_FLOOR, else plain LOCAL (the previous seated behaviour, still correct - the height
+		// reconciliation just becomes a no-op).  STAGE is deliberately NOT chosen: its origin is the
+		// room centre, which for a camera-driven game puts the view metres from the in-game body.
+		XrReferenceSpaceType e_want = XR_REFERENCE_SPACE_TYPE_LOCAL;
+		{
+			uint32_t u_sp_count = 0;
+			if (XR_SUCCEEDED(s_xrEnumerateReferenceSpaces(s_session, 0, &u_sp_count, 0)) && u_sp_count)
+			{
+				XrReferenceSpaceType a_sp[16];
+				if (u_sp_count > 16) u_sp_count = 16;
+				if (XR_SUCCEEDED(s_xrEnumerateReferenceSpaces(s_session, u_sp_count, &u_sp_count, a_sp)))
+				{
+					for (uint32_t i = 0; i < u_sp_count; ++i)
+						if (a_sp[i] == XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR)
+							{ e_want = XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR; break; }
+				}
+			}
+		}
+
 		XrReferenceSpaceCreateInfo rsci; memset(&rsci, 0, sizeof(rsci));
 		rsci.type = XR_TYPE_REFERENCE_SPACE_CREATE_INFO;
-		rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+		rsci.referenceSpaceType = e_want;
 		rsci.poseInReferenceSpace.orientation.w = 1.0f;		// identity
 		if (XR_FAILED(s_xrCreateReferenceSpace(s_session, &rsci, &s_space)))
 		{
-			Log("TRESPASS_VR: xrCreateReferenceSpace failed\n");
-			s_space = XR_NULL_HANDLE;
-			return false;
+			// Fall back to LOCAL if the preferred type was refused despite being listed.
+			if (e_want != XR_REFERENCE_SPACE_TYPE_LOCAL)
+			{
+				e_want = XR_REFERENCE_SPACE_TYPE_LOCAL;
+				rsci.referenceSpaceType = e_want;
+			}
+			if (XR_FAILED(s_xrCreateReferenceSpace(s_session, &rsci, &s_space)))
+			{
+				Log("TRESPASS_VR: xrCreateReferenceSpace failed\n");
+				s_space = XR_NULL_HANDLE;
+				return false;
+			}
 		}
+		s_ref_space_type = e_want;
+		{
+			char buf[128];
+			sprintf(buf, "TRESPASS_VR: reference space = %s\n",
+				e_want == XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR ? "LOCAL_FLOOR (standing, real floor)"
+				                                              : "LOCAL (seated - LOCAL_FLOOR unavailable)");
+			Log(buf);
+		}
+		// (Action-set attach happens in FrameBegin, just after this succeeds - AttachActions lives in
+		// namespace RenderVR and cannot be named from this anonymous-namespace function.)
 
 		// Pick a swapchain format.  The runtime lists what it supports in ITS order of
 		// preference, but we need one the renderer can actually draw into, so intersect that
@@ -766,6 +860,11 @@ namespace RenderVR
 
 	bool bActive() { return s_b_active; }
 
+	// Forward declarations - defined further down this namespace but called from FrameBegin above them.
+	void CreateActions();
+	void AttachActions();
+	void SyncInput();
+
 	int  iRecommendedEyeWidth()  { return s_eye_w; }
 	int  iRecommendedEyeHeight() { return s_eye_h; }
 
@@ -827,6 +926,11 @@ namespace RenderVR
 		if (s_b_exit_requested) { Shutdown_Internal(); return; }
 
 		if (!s_b_session_running) return;
+
+		// Controllers: attach the action set + create the hand pose spaces now the session exists.
+		// Idempotent (guards on s_b_actions_attached), so calling it every frame is fine; it only
+		// does work once, and must happen before the first SyncInput below.
+		AttachActions();
 
 		// A frame begun on a previous pass that was never submitted must be closed before a new
 		// one can start - xrBeginFrame/xrEndFrame have to pair exactly.  This happens whenever
@@ -937,6 +1041,25 @@ namespace RenderVR
 			s_b_views_located  = (u_got >= (uint32_t)k_i_eyes);
 			UpdateEyeSeparation(vs, u_got);
 		}
+
+		// AUTO-RECENTRE ON LOAD.  The reference space anchors "forward" and "here" to wherever the
+		// headset was when the space was created, so the player otherwise spawns rotated (~90 degrees
+		// in testing) and offset from the game camera.  The first frame with a genuinely tracked pose
+		// after a level load, snap the neutral origin to it so the player starts facing forward, at
+		// the camera.  OnLevelLoad() re-arms this for the next level.  The manual Recentre (Ctrl+R)
+		// still works to re-zero at any time.
+		if (!s_b_auto_recentred && s_b_views_located &&
+		    (s_view_state_flags & XR_VIEW_STATE_POSITION_VALID_BIT) &&
+		    (s_view_state_flags & XR_VIEW_STATE_ORIENTATION_VALID_BIT))
+		{
+			Recentre();
+			s_b_auto_recentred = true;
+		}
+
+		// Refresh controller state for this frame (sticks, buttons, hand poses).  Cheap; guards
+		// internally on being attached + focused.  Uses this frame's predicted display time for the
+		// hand pose location, so it must run after the frame is picked up.
+		SyncInput();
 	}
 
 	//******************************************************************************************
@@ -1123,8 +1246,14 @@ namespace RenderVR
 		//
 		// Yaw only, so recentring while looking up or with the head tilted does not leave the
 		// whole world pitched or rolled.
+		// Re-origin to the neutral pose captured by Recentre: subtract the reference POSITION, then
+		// remove the reference YAW.  This order makes the neutral pose map to (0,0,0) with zero yaw,
+		// so the eye sits at the game camera there; physical movement/crouch then offsets from it.
 		XrQuaternionf q_or = view.pose.orientation;
 		XrVector3f    v_ps = view.pose.position;
+		v_ps.x -= s_a_ref_pos[0];
+		v_ps.y -= s_a_ref_pos[1];
+		v_ps.z -= s_a_ref_pos[2];
 
 		if (s_a_recentre[3] != 1.0f || s_a_recentre[1] != 0.0f)
 		{
@@ -1184,10 +1313,25 @@ namespace RenderVR
 		s_a_recentre[2] = 0.0f;
 		s_a_recentre[3] =  q.w / f_len;
 
-		char buf[160];
-		sprintf(buf, "TRESPASS_VR: recentred - reference yaw removed (inv yaw quat y=%.4f w=%.4f)\n",
-			s_a_recentre[1], s_a_recentre[3]);
+		// Capture the current head POSITION as the neutral origin too - recentring means "treat my
+		// current comfortable pose as here", which is position (including height) as well as facing.
+		// bEyeView / the hand poses subtract this before removing the yaw.
+		s_a_ref_pos[0] = s_a_views[0].pose.position.x;
+		s_a_ref_pos[1] = s_a_views[0].pose.position.y;
+		s_a_ref_pos[2] = s_a_views[0].pose.position.z;
+
+		char buf[192];
+		sprintf(buf, "TRESPASS_VR: recentred - yaw removed (inv yaw y=%.4f w=%.4f), origin=(%.2f,%.2f,%.2f)\n",
+			s_a_recentre[1], s_a_recentre[3], s_a_ref_pos[0], s_a_ref_pos[1], s_a_ref_pos[2]);
 		Log(buf);
+	}
+
+	void OnLevelLoad()
+	{
+		// Just re-arm; the actual recentre happens on the next tracked frame in FrameBegin, when a
+		// valid head pose is available (the pose is not ready at the instant a level finishes loading).
+		s_b_auto_recentred = false;
+		Log("TRESPASS_VR: level load - will recentre on the next tracked frame\n");
 	}
 
 	void SetRenderedFov(int i_eye, float f_tan_left, float f_tan_right,
@@ -1200,6 +1344,288 @@ namespace RenderVR
 		s_aa_f_rendered_tan[i_eye][2] = f_tan_up;
 		s_aa_f_rendered_tan[i_eye][3] = f_tan_down;
 		s_ab_rendered_fov[i_eye]      = true;
+	}
+
+	//******************************************************************************************
+	//
+	// CONTROLLERS.  OpenXR's action system: declare abstract actions (a trigger pull, a grip pose),
+	// suggest how each maps to real controller inputs for the profiles we know, and let the runtime
+	// bind whatever hardware is present.  All of this needs only the instance except the action
+	// SPACES and the attach, which need the session (done in AttachActions from bTryCreateSession).
+	//
+
+	XrPath xrPath(const char* psz)
+	{
+		XrPath p = XR_NULL_PATH;
+		if (s_xrStringToPath) s_xrStringToPath(s_instance, psz, &p);
+		return p;
+	}
+
+	// Create one action, bound to BOTH hands via the two subaction paths.
+	XrAction MakeAction(const char* psz_name, const char* psz_loc, XrActionType e_type)
+	{
+		XrActionCreateInfo aci; memset(&aci, 0, sizeof(aci));
+		aci.type = XR_TYPE_ACTION_CREATE_INFO;
+		strncpy(aci.actionName, psz_name, sizeof(aci.actionName) - 1);
+		strncpy(aci.localizedActionName, psz_loc, sizeof(aci.localizedActionName) - 1);
+		aci.actionType          = e_type;
+		aci.countSubactionPaths = 2;
+		aci.subactionPaths      = s_path_hand;
+		XrAction a = XR_NULL_HANDLE;
+		XrResult r = s_xrCreateAction(s_action_set, &aci, &a);
+		if (XR_FAILED(r)) { char b[96]; sprintf(b, "TRESPASS_VR: create action '%s' failed (%d)\n", psz_name, (int)r); Log(b); }
+		return a;
+	}
+
+	// A growable list of suggested bindings for one interaction profile.
+	struct SBindList { XrActionSuggestedBinding a[64]; uint32_t n; };
+
+	void Bind(SBindList& bl, XrAction act, const char* psz_path)
+	{
+		if (act == XR_NULL_HANDLE || bl.n >= 64) return;
+		XrPath p = xrPath(psz_path);
+		if (p == XR_NULL_PATH) return;
+		bl.a[bl.n].action  = act;
+		bl.a[bl.n].binding = p;
+		++bl.n;
+	}
+
+	void Suggest(const char* psz_profile, SBindList& bl)
+	{
+		if (!bl.n) return;
+		XrInteractionProfileSuggestedBinding s; memset(&s, 0, sizeof(s));
+		s.type                   = XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING;
+		s.interactionProfile     = xrPath(psz_profile);
+		s.suggestedBindings      = bl.a;
+		s.countSuggestedBindings = bl.n;
+		XrResult r = s_xrSuggestInteractionProfileBindings(s_instance, &s);
+		char b[128]; sprintf(b, "TRESPASS_VR: suggest %s -> %d (%u bindings)\n", psz_profile, (int)r, bl.n);
+		Log(b);
+	}
+
+	// The common analogue-stick controller layout (Index / Oculus Touch), parameterised only where
+	// they differ: the squeeze axis path and the two face-button paths per hand.
+	void BindStickController(const char* psz_profile,
+	                         const char* psz_squeeze,
+	                         const char* psz_l_primary, const char* psz_l_secondary,
+	                         const char* psz_r_primary, const char* psz_r_secondary)
+	{
+		SBindList bl; bl.n = 0;
+		Bind(bl, s_act_pose,    "/user/hand/left/input/grip/pose");
+		Bind(bl, s_act_pose,    "/user/hand/right/input/grip/pose");
+		Bind(bl, s_act_stick,   "/user/hand/left/input/thumbstick");
+		Bind(bl, s_act_stick,   "/user/hand/right/input/thumbstick");
+		Bind(bl, s_act_stickclk,"/user/hand/left/input/thumbstick/click");
+		Bind(bl, s_act_stickclk,"/user/hand/right/input/thumbstick/click");
+		Bind(bl, s_act_trigger, "/user/hand/left/input/trigger/value");
+		Bind(bl, s_act_trigger, "/user/hand/right/input/trigger/value");
+		char l_sq[64], r_sq[64];
+		sprintf(l_sq, "/user/hand/left/input/%s",  psz_squeeze);
+		sprintf(r_sq, "/user/hand/right/input/%s", psz_squeeze);
+		Bind(bl, s_act_grip, l_sq);
+		Bind(bl, s_act_grip, r_sq);
+		Bind(bl, s_act_a, psz_l_primary);
+		Bind(bl, s_act_b, psz_l_secondary);
+		Bind(bl, s_act_a, psz_r_primary);
+		Bind(bl, s_act_b, psz_r_secondary);
+		Suggest(psz_profile, bl);
+	}
+
+	void CreateActions()
+	{
+		if (s_b_actions_created) return;
+		if (!s_xrCreateActionSet) return;
+
+		XrActionSetCreateInfo asci; memset(&asci, 0, sizeof(asci));
+		asci.type = XR_TYPE_ACTION_SET_CREATE_INFO;
+		strcpy(asci.actionSetName, "gameplay");
+		strcpy(asci.localizedActionSetName, "Gameplay");
+		asci.priority = 0;
+		XrResult r = s_xrCreateActionSet(s_instance, &asci, &s_action_set);
+		if (XR_FAILED(r)) { char b[96]; sprintf(b, "TRESPASS_VR: xrCreateActionSet failed (%d)\n", (int)r); Log(b); return; }
+
+		s_path_hand[0] = xrPath("/user/hand/left");
+		s_path_hand[1] = xrPath("/user/hand/right");
+
+		s_act_pose     = MakeAction("hand_pose",  "Hand pose",        XR_ACTION_TYPE_POSE_INPUT);
+		s_act_stick    = MakeAction("stick",      "Thumbstick",       XR_ACTION_TYPE_VECTOR2F_INPUT);
+		s_act_trigger  = MakeAction("trigger",    "Trigger",          XR_ACTION_TYPE_FLOAT_INPUT);
+		s_act_grip     = MakeAction("grip",       "Grip",             XR_ACTION_TYPE_FLOAT_INPUT);
+		s_act_a        = MakeAction("primary",    "Primary button",   XR_ACTION_TYPE_BOOLEAN_INPUT);
+		s_act_b        = MakeAction("secondary",  "Secondary button", XR_ACTION_TYPE_BOOLEAN_INPUT);
+		s_act_stickclk = MakeAction("stick_click","Thumbstick click", XR_ACTION_TYPE_BOOLEAN_INPUT);
+
+		// Valve Index ("knuckles") - the user's lighthouse controllers are most likely these.
+		BindStickController("/interaction_profiles/valve/index_controller",
+			"squeeze/value",
+			"/user/hand/left/input/a/click",  "/user/hand/left/input/b/click",
+			"/user/hand/right/input/a/click", "/user/hand/right/input/b/click");
+
+		// Oculus Touch - left has X/Y, right has A/B.
+		BindStickController("/interaction_profiles/oculus/touch_controller",
+			"squeeze/value",
+			"/user/hand/left/input/x/click",  "/user/hand/left/input/y/click",
+			"/user/hand/right/input/a/click", "/user/hand/right/input/b/click");
+
+		// Khronos simple controller - the guaranteed fallback.  Only a pose and two clicks; no
+		// analogue axes, so trigger/stick/grip stay zero on it.  Map select+menu to the buttons and
+		// route select to the trigger boolean too, so "pull to act" still works.
+		{
+			SBindList bl; bl.n = 0;
+			Bind(bl, s_act_pose, "/user/hand/left/input/grip/pose");
+			Bind(bl, s_act_pose, "/user/hand/right/input/grip/pose");
+			Bind(bl, s_act_a,    "/user/hand/left/input/menu/click");
+			Bind(bl, s_act_a,    "/user/hand/right/input/menu/click");
+			Bind(bl, s_act_b,    "/user/hand/left/input/select/click");
+			Bind(bl, s_act_b,    "/user/hand/right/input/select/click");
+			Suggest("/interaction_profiles/khr/simple_controller", bl);
+		}
+
+		s_b_actions_created = true;
+		Log("TRESPASS_VR: input actions created\n");
+	}
+
+	void AttachActions()
+	{
+		if (s_b_actions_attached || s_action_set == XR_NULL_HANDLE || s_session == XR_NULL_HANDLE)
+			return;
+
+		// A pose action needs an action SPACE to be locatable; one per hand, at the grip pose.
+		for (int h = 0; h < k_i_hands; ++h)
+		{
+			XrActionSpaceCreateInfo aspci; memset(&aspci, 0, sizeof(aspci));
+			aspci.type                       = XR_TYPE_ACTION_SPACE_CREATE_INFO;
+			aspci.action                     = s_act_pose;
+			aspci.subactionPath              = s_path_hand[h];
+			aspci.poseInActionSpace.orientation.w = 1.0f;
+			if (XR_FAILED(s_xrCreateActionSpace(s_session, &aspci, &s_space_hand[h])))
+				Log("TRESPASS_VR: xrCreateActionSpace(hand) failed\n");
+		}
+
+		XrSessionActionSetsAttachInfo ai; memset(&ai, 0, sizeof(ai));
+		ai.type            = XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO;
+		ai.countActionSets = 1;
+		ai.actionSets      = &s_action_set;
+		XrResult r = s_xrAttachSessionActionSets(s_session, &ai);
+		char b[96]; sprintf(b, "TRESPASS_VR: attach action sets -> %d\n", (int)r); Log(b);
+		s_b_actions_attached = XR_SUCCEEDED(r);
+	}
+
+	// Small readers - each returns 0/false when the input is not active on this controller.
+	float GetFloat(XrAction act, XrPath hand)
+	{
+		XrActionStateFloat st; memset(&st, 0, sizeof(st)); st.type = XR_TYPE_ACTION_STATE_FLOAT;
+		XrActionStateGetInfo gi; memset(&gi, 0, sizeof(gi)); gi.type = XR_TYPE_ACTION_STATE_GET_INFO;
+		gi.action = act; gi.subactionPath = hand;
+		if (act != XR_NULL_HANDLE && XR_SUCCEEDED(s_xrGetActionStateFloat(s_session, &gi, &st)) && st.isActive)
+			return st.currentState;
+		return 0.0f;
+	}
+	bool GetBool(XrAction act, XrPath hand, bool* pb_active = 0)
+	{
+		XrActionStateBoolean st; memset(&st, 0, sizeof(st)); st.type = XR_TYPE_ACTION_STATE_BOOLEAN;
+		XrActionStateGetInfo gi; memset(&gi, 0, sizeof(gi)); gi.type = XR_TYPE_ACTION_STATE_GET_INFO;
+		gi.action = act; gi.subactionPath = hand;
+		if (act != XR_NULL_HANDLE && XR_SUCCEEDED(s_xrGetActionStateBoolean(s_session, &gi, &st)))
+		{
+			if (pb_active && st.isActive) *pb_active = true;
+			return st.isActive && st.currentState;
+		}
+		return false;
+	}
+
+	void SyncInput()
+	{
+		if (!s_b_actions_attached) return;
+		if (s_session_state != XR_SESSION_STATE_FOCUSED) return;	// input only flows when focused
+
+		XrActiveActionSet aas; memset(&aas, 0, sizeof(aas));
+		aas.actionSet    = s_action_set;
+		aas.subactionPath = XR_NULL_PATH;
+		XrActionsSyncInfo si; memset(&si, 0, sizeof(si));
+		si.type                  = XR_TYPE_ACTIONS_SYNC_INFO;
+		si.countActiveActionSets = 1;
+		si.activeActionSets      = &aas;
+		if (XR_FAILED(s_xrSyncActions(s_session, &si))) return;
+
+		for (int h = 0; h < k_i_hands; ++h)
+		{
+			SHandState hs; memset(&hs, 0, sizeof(hs));
+			XrPath hand = s_path_hand[h];
+			bool b_any = false;
+
+			XrActionStateVector2f v; memset(&v, 0, sizeof(v)); v.type = XR_TYPE_ACTION_STATE_VECTOR2F;
+			XrActionStateGetInfo gi; memset(&gi, 0, sizeof(gi)); gi.type = XR_TYPE_ACTION_STATE_GET_INFO;
+			gi.action = s_act_stick; gi.subactionPath = hand;
+			if (XR_SUCCEEDED(s_xrGetActionStateVector2f(s_session, &gi, &v)) && v.isActive)
+			{ hs.af_stick[0] = v.currentState.x; hs.af_stick[1] = v.currentState.y; b_any = true; }
+
+			hs.f_trigger = GetFloat(s_act_trigger, hand);
+			hs.f_grip    = GetFloat(s_act_grip,    hand);
+			hs.b_trigger = hs.f_trigger > 0.5f;
+			hs.b_grip    = hs.f_grip    > 0.5f;
+			hs.b_a           = GetBool(s_act_a,        hand, &b_any);
+			hs.b_b           = GetBool(s_act_b,        hand, &b_any);
+			hs.b_stick_click = GetBool(s_act_stickclk, hand, &b_any);
+			if (hs.f_trigger != 0.0f || hs.f_grip != 0.0f) b_any = true;
+
+			// Grip pose, located in the reference space at this frame's display time, then put
+			// through the SAME recentre + axis remap + standing-height reconciliation as the eyes,
+			// so a hand position is directly comparable to the head/eye positions.
+			if (s_space_hand[h] != XR_NULL_HANDLE)
+			{
+				XrActionStatePose ps; memset(&ps, 0, sizeof(ps)); ps.type = XR_TYPE_ACTION_STATE_POSE;
+				gi.action = s_act_pose; gi.subactionPath = hand;
+				if (XR_SUCCEEDED(s_xrGetActionStatePose(s_session, &gi, &ps)) && ps.isActive)
+				{
+					b_any = true;
+					XrSpaceLocation sl; memset(&sl, 0, sizeof(sl)); sl.type = XR_TYPE_SPACE_LOCATION;
+					if (XR_SUCCEEDED(s_xrLocateSpace(s_space_hand[h], s_space,
+						s_frame_state.predictedDisplayTime, &sl)) &&
+						(sl.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) &&
+						(sl.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT))
+					{
+						XrQuaternionf q = sl.pose.orientation;
+						XrVector3f    p = sl.pose.position;
+						p.x -= s_a_ref_pos[0];
+						p.y -= s_a_ref_pos[1];
+						p.z -= s_a_ref_pos[2];
+						if (s_a_recentre[3] != 1.0f || s_a_recentre[1] != 0.0f)
+						{ q = qMul(s_a_recentre, q); p = v3Rotate(s_a_recentre, p); }
+						hs.af_pos[0]   =  p.x;
+						hs.af_pos[1]   = -p.z;
+						hs.af_pos[2]   =  p.y;
+						hs.f_rot_w     =  q.w;
+						hs.af_rot_v[0] =  q.x;
+						hs.af_rot_v[1] = -q.z;
+						hs.af_rot_v[2] =  q.y;
+						hs.b_pose_valid = true;
+					}
+				}
+			}
+
+			hs.b_active = b_any;
+			s_hand[h] = hs;
+		}
+
+		// One line the first time a controller reports anything, to confirm bindings took.
+		static bool s_b_logged = false;
+		if (!s_b_logged && (s_hand[0].b_active || s_hand[1].b_active))
+		{
+			s_b_logged = true;
+			char b[192];
+			sprintf(b, "TRESPASS_VR: controllers live - L active=%d pose=%d, R active=%d pose=%d\n",
+				s_hand[0].b_active, s_hand[0].b_pose_valid, s_hand[1].b_active, s_hand[1].b_pose_valid);
+			Log(b);
+		}
+	}
+
+	bool bHandState(int i_hand, SHandState& hs)
+	{
+		if (!s_b_active || i_hand < 0 || i_hand >= k_i_hands) return false;
+		if (!s_b_actions_attached) return false;
+		hs = s_hand[i_hand];
+		return true;
 	}
 
 	bool bInit()
@@ -1279,6 +1705,7 @@ namespace RenderVR
 			}
 		}
 		bool b_have_d3d11 = false;
+		bool b_have_local_floor = false;
 		if (u_ext_count)
 		{
 			XrExtensionProperties* pa_ext = new XrExtensionProperties[u_ext_count];
@@ -1304,6 +1731,8 @@ namespace RenderVR
 					Log(buf);
 					if (strcmp(pa_ext[i].extensionName, XR_KHR_D3D11_ENABLE_EXTENSION_NAME) == 0)
 						b_have_d3d11 = true;
+					if (strcmp(pa_ext[i].extensionName, XR_EXT_LOCAL_FLOOR_EXTENSION_NAME) == 0)
+						b_have_local_floor = true;
 				}
 			}
 			delete[] pa_ext;
@@ -1324,11 +1753,18 @@ namespace RenderVR
 		}
 
 		// ---- 3. Create the instance ------------------------------------------------------
-		const char* apsz_ext[] = { XR_KHR_D3D11_ENABLE_EXTENSION_NAME };
+		// Enable XR_EXT_local_floor when offered, so a floor-referenced reference space becomes
+		// available (SteamVR does not expose LOCAL_FLOOR without it).  D3D11 is mandatory and always
+		// first; local_floor is optional and only appended when present, so a runtime without it is
+		// unaffected and just falls back to the seated LOCAL space.
+		const char* apsz_ext[2] = { XR_KHR_D3D11_ENABLE_EXTENSION_NAME, 0 };
+		uint32_t u_ext_enabled = 1;
+		if (b_have_local_floor)
+			apsz_ext[u_ext_enabled++] = XR_EXT_LOCAL_FLOOR_EXTENSION_NAME;
 		XrInstanceCreateInfo ici;
 		memset(&ici, 0, sizeof(ici));
 		ici.type = XR_TYPE_INSTANCE_CREATE_INFO;
-		ici.enabledExtensionCount = 1;
+		ici.enabledExtensionCount = u_ext_enabled;
 		ici.enabledExtensionNames = apsz_ext;
 		strcpy(ici.applicationInfo.applicationName, "Trespasser");
 		ici.applicationInfo.applicationVersion = 1;
@@ -1363,6 +1799,7 @@ namespace RenderVR
 		    !LOAD(s_instance, xrRequestExitSession) ||
 		    !LOAD(s_instance, xrPollEvent) ||
 		    !LOAD(s_instance, xrCreateReferenceSpace) ||
+		    !LOAD(s_instance, xrEnumerateReferenceSpaces) ||
 		    !LOAD(s_instance, xrDestroySpace) ||
 		    !LOAD(s_instance, xrEnumerateSwapchainFormats) ||
 		    !LOAD(s_instance, xrCreateSwapchain) ||
@@ -1374,7 +1811,21 @@ namespace RenderVR
 		    !LOAD(s_instance, xrWaitFrame) ||
 		    !LOAD(s_instance, xrBeginFrame) ||
 		    !LOAD(s_instance, xrEndFrame) ||
-		    !LOAD(s_instance, xrLocateViews))
+		    !LOAD(s_instance, xrLocateViews) ||
+		    !LOAD(s_instance, xrStringToPath) ||
+		    !LOAD(s_instance, xrCreateActionSet) ||
+		    !LOAD(s_instance, xrDestroyActionSet) ||
+		    !LOAD(s_instance, xrCreateAction) ||
+		    !LOAD(s_instance, xrDestroyAction) ||
+		    !LOAD(s_instance, xrSuggestInteractionProfileBindings) ||
+		    !LOAD(s_instance, xrAttachSessionActionSets) ||
+		    !LOAD(s_instance, xrSyncActions) ||
+		    !LOAD(s_instance, xrGetActionStateFloat) ||
+		    !LOAD(s_instance, xrGetActionStateBoolean) ||
+		    !LOAD(s_instance, xrGetActionStateVector2f) ||
+		    !LOAD(s_instance, xrGetActionStatePose) ||
+		    !LOAD(s_instance, xrCreateActionSpace) ||
+		    !LOAD(s_instance, xrLocateSpace))
 		{
 			Shutdown_Internal();
 			return false;
@@ -1499,6 +1950,10 @@ namespace RenderVR
 			}
 			delete[] pa_v;
 		}
+
+		// Controllers: declare the actions and suggest bindings now (needs only the instance).  The
+		// action spaces and the attach happen later, once the session exists (AttachActions).
+		CreateActions();
 
 		s_b_active = true;
 		Log("TRESPASS_VR: OpenXR bring-up OK (instance + system + requirements)\n");

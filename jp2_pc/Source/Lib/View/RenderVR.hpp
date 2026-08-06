@@ -169,6 +169,48 @@ namespace RenderVR
 
 	//******************************************************************************************
 	//
+	// CONTROLLERS (input).
+	//
+	// Per-hand controller state for the frame FrameBegin most recently picked up.  Hand 0 = left,
+	// 1 = right.  Like SEyeView, the pose is ALREADY in engine axes (X right, Y forward, Z up),
+	// metres, and the same reference space + recentre + standing-height reconciliation as the eyes -
+	// so it is directly comparable to the head/eye positions and can be added to the game camera the
+	// same way.  The pose is the GRIP pose (palm), which is the natural one for holding objects.
+	//
+	// Analogue axes are in their OpenXR ranges: thumbstick components in [-1, 1] (Y is up-positive),
+	// trigger and grip in [0, 1].  The b_* booleans are the digital buttons plus thresholded
+	// trigger/grip, for convenience.
+	//
+	// Prefix: hs
+	//
+	struct SHandState
+	{
+		bool  b_active;			// controller present / its actions are live this frame
+		bool  b_pose_valid;		// the grip pose was located this frame (af_pos/af_rot usable)
+		float af_pos[3];		// grip position, engine axes, metres, reference space
+		float f_rot_w;			// grip orientation quaternion, engine axes: scalar, then
+		float af_rot_v[3];		//   vector part
+		float af_stick[2];		// thumbstick x, y  in [-1, 1]
+		float f_trigger;		// trigger pull      in [0, 1]
+		float f_grip;			// grip/squeeze      in [0, 1]
+		bool  b_trigger;		// trigger past half
+		bool  b_grip;			// grip past half
+		bool  b_a;				// primary button   (A / X / Vive+Simple menu)
+		bool  b_b;				// secondary button (B / Y)
+		bool  b_stick_click;	// thumbstick pressed in
+	};
+
+	//******************************************************************************************
+	//
+	// Fill in hand i_hand's state for this frame.  Returns false - leaving hs untouched - when VR
+	// is inactive or the controllers are not attached yet.  A true return means the state is fresh;
+	// callers that need the POSE must still check hs.b_pose_valid (a controller can be reporting
+	// buttons and sticks while its 6-DoF pose is momentarily untracked).
+	//
+	bool bHandState(int i_hand, SHandState& hs);
+
+	//******************************************************************************************
+	//
 	// Declare the frustum this eye was ACTUALLY rendered with, as tangents of its four half
 	// angles, so that the projection layer describes the image being handed over rather than the
 	// one the runtime suggested.
@@ -196,6 +238,15 @@ namespace RenderVR
 	// world pitched or rolled.  No-op with a warning if there is no tracked pose yet.
 	//
 	void Recentre();
+
+	//******************************************************************************************
+	//
+	// Re-arm the automatic recentre so it fires again on the next tracked frame.  Call this when a
+	// level finishes loading (and the player is placed) so the player always starts facing forward
+	// and at the game camera, instead of wherever the headset happened to point at session start.
+	// No-op if VR is inactive.
+	//
+	void OnLevelLoad();
 
 	void SetRenderedFov(int i_eye, float f_tan_left, float f_tan_right,
 	                               float f_tan_up,   float f_tan_down);
