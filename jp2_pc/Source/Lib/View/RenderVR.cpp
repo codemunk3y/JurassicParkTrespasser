@@ -174,6 +174,12 @@ namespace
 	float s_a_ref_pos[3] = { 0.0f, 0.0f, 0.0f };
 	bool  s_b_auto_recentred = false;			// has the automatic on-load recentre fired yet
 
+	// A small upward view lift baked into the neutral origin, so the on-load eye height sits a touch
+	// above the game camera (the player found ~15 cm the comfortable "sweet spot").  Applied by
+	// lowering the captured reference height, which raises every reported eye/hand up-offset equally,
+	// keeping hand-eye alignment.  Metres.
+	const float k_f_view_lift = 0.15f;
+
 	// Which reference space the runtime actually gave us, for the log and to explain the origin.
 	XrReferenceSpaceType s_ref_space_type = XR_REFERENCE_SPACE_TYPE_LOCAL;
 
@@ -1317,7 +1323,7 @@ namespace RenderVR
 		// current comfortable pose as here", which is position (including height) as well as facing.
 		// bEyeView / the hand poses subtract this before removing the yaw.
 		s_a_ref_pos[0] = s_a_views[0].pose.position.x;
-		s_a_ref_pos[1] = s_a_views[0].pose.position.y;
+		s_a_ref_pos[1] = s_a_views[0].pose.position.y - k_f_view_lift;	// lift the neutral eye height
 		s_a_ref_pos[2] = s_a_views[0].pose.position.z;
 
 		char buf[192];

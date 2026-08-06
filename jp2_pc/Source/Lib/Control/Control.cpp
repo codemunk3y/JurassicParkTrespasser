@@ -75,6 +75,7 @@
 #include "Lib/EntityDBase/MessageTypes/MsgStep.hpp"
 #include "Lib/EntityDBase/Replay.hpp"
 #include "Lib/Sys/ConIO.hpp"
+#include "Lib/View/RenderVR.hpp"			// VR: thumbstick locomotion
 
 #include <mmsystem.h>
 
@@ -161,6 +162,35 @@ void CInputDeemone::Process(const CMessageStep& msg_step)
 		}
 
 		tin.fElapsedTime = msg_step.sStep;
+
+		// VR CONTROLLER LOCOMOTION.  Fold the thumbsticks into the same SInput the keyboard/mouse
+		// fills, so everything downstream (physics walk, body-follows-head, replay) is unchanged.
+		// Left stick = move (walk/strafe, head-relative like the keyboard's v2Move); right stick X =
+		// smooth turn, fed as a per-frame yaw the same way mouse-look is.  No-op unless a VR session
+		// is running, so the desktop build is untouched.
+		if (RenderVR::bSessionRunning())
+		{
+			const float f_dead = 0.18f;			// stick deadzone - sticks rarely rest at exact zero
+			RenderVR::SHandState hs_l, hs_r;
+
+			if (RenderVR::bHandState(0, hs_l) && hs_l.b_active)
+			{
+				float f_x = hs_l.af_stick[0], f_y = hs_l.af_stick[1];
+				if (f_x >  f_dead || f_x < -f_dead) tin.v2Move.tX += f_x * 0.6f;	// strafe
+				if (f_y >  f_dead || f_y < -f_dead) tin.v2Move.tY += f_y;		// forward/back
+			}
+
+			if (RenderVR::bHandState(1, hs_r) && hs_r.b_active)
+			{
+				float f_turn = hs_r.af_stick[0];
+				if (f_turn > f_dead || f_turn < -f_dead)
+				{
+					// Radians this step: stick x * turn rate * elapsed.  ~2 rad/s at full deflection.
+					const float f_turn_rate = 2.0f;
+					tin.v2Rotate.tX += f_turn * f_turn_rate * msg_step.sStep;
+				}
+			}
+		}
 
 		//
 		// For now, since the player needs to act whenever a key is down,
