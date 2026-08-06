@@ -74,6 +74,7 @@
 #include "Lib/Std/Hash.hpp"
 #include "Lib/Sys/Profile.hpp"
 #include "Lib/Trigger/Trigger.hpp"
+#include "Lib/View/RenderVR.hpp"			// VR: tighter physics step clamp during headset hitches
 
 #include <string.h>
 #include <stdio.h>
@@ -194,7 +195,13 @@ extern CProfileStat psMsgSubscribe, psMoveMsgQuery;
 			u4Frame = 0;
 
 		sElapsedRealTime	+=	s_elapsed;					// The unclamped time.
-		sStep				=	Min(s_step, sSTEP_MAX) * sMultiplier;
+
+		// In VR the two-eye render can hitch in heavy levels; a single long frame would otherwise
+		// step physics up to sSTEP_MAX (0.1s) at once, which overshoots and sinks/destabilises the
+		// body.  Clamp harder while a headset session is running so a hitch slows physics slightly
+		// rather than lurching it.  Desktop is unchanged.
+		TSec s_step_max = RenderVR::bSessionRunning() ? TSec(0.05f) : sSTEP_MAX;
+		sStep				=	Min(s_step, s_step_max) * sMultiplier;
 		sStaticStep			=	sStep;
 		sStaticTotal		+=	sStep;
 		sTotal				=	sStaticTotal;
