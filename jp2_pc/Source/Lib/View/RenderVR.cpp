@@ -174,11 +174,12 @@ namespace
 	float s_a_ref_pos[3] = { 0.0f, 0.0f, 0.0f };
 	bool  s_b_auto_recentred = false;			// has the automatic on-load recentre fired yet
 
-	// A small upward view lift baked into the neutral origin, so the on-load eye height sits a touch
-	// above the game camera (the player found ~15 cm the comfortable "sweet spot").  Applied by
-	// lowering the captured reference height, which raises every reported eye/hand up-offset equally,
-	// keeping hand-eye alignment.  Metres.
-	const float k_f_view_lift = 0.15f;
+	// A small constant view offset added to every reported eye AND hand position, so the on-load
+	// viewpoint sits in the player's comfortable "sweet spot" relative to the game camera: 15 cm up
+	// and 2 cm back (5 cm back felt too far).  Applied equally to eyes and hands, so it shifts the
+	// whole VR anchor together and hand-eye alignment is preserved.  Engine axes, metres:
+	// { right, forward, up }; forward is negative to sit BACK.
+	const float k_a_view_offset[3] = { 0.0f, -0.02f, 0.15f };
 
 	// Which reference space the runtime actually gave us, for the log and to explain the origin.
 	XrReferenceSpaceType s_ref_space_type = XR_REFERENCE_SPACE_TYPE_LOCAL;
@@ -1268,9 +1269,10 @@ namespace RenderVR
 		}
 
 		// OpenXR (X right, Y up, Z back) -> engine (X right, Y forward, Z up) is (x, -z, y).
-		eyev.af_pos[0]   =  v_ps.x;
-		eyev.af_pos[1]   = -v_ps.z;
-		eyev.af_pos[2]   =  v_ps.y;
+		// Plus the constant sweet-spot offset (up + back).
+		eyev.af_pos[0]   =  v_ps.x + k_a_view_offset[0];
+		eyev.af_pos[1]   = -v_ps.z + k_a_view_offset[1];
+		eyev.af_pos[2]   =  v_ps.y + k_a_view_offset[2];
 
 		// The same remap applies to the quaternion's vector part with the scalar untouched:
 		// the map is a proper rotation (determinant +1), so it carries the rotation into the
@@ -1323,7 +1325,7 @@ namespace RenderVR
 		// current comfortable pose as here", which is position (including height) as well as facing.
 		// bEyeView / the hand poses subtract this before removing the yaw.
 		s_a_ref_pos[0] = s_a_views[0].pose.position.x;
-		s_a_ref_pos[1] = s_a_views[0].pose.position.y - k_f_view_lift;	// lift the neutral eye height
+		s_a_ref_pos[1] = s_a_views[0].pose.position.y;
 		s_a_ref_pos[2] = s_a_views[0].pose.position.z;
 
 		char buf[192];
@@ -1598,9 +1600,9 @@ namespace RenderVR
 						p.z -= s_a_ref_pos[2];
 						if (s_a_recentre[3] != 1.0f || s_a_recentre[1] != 0.0f)
 						{ q = qMul(s_a_recentre, q); p = v3Rotate(s_a_recentre, p); }
-						hs.af_pos[0]   =  p.x;
-						hs.af_pos[1]   = -p.z;
-						hs.af_pos[2]   =  p.y;
+						hs.af_pos[0]   =  p.x + k_a_view_offset[0];
+						hs.af_pos[1]   = -p.z + k_a_view_offset[1];
+						hs.af_pos[2]   =  p.y + k_a_view_offset[2];
 						hs.f_rot_w     =  q.w;
 						hs.af_rot_v[0] =  q.x;
 						hs.af_rot_v[1] = -q.z;

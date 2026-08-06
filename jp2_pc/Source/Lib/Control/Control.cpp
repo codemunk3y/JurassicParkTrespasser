@@ -172,24 +172,40 @@ void CInputDeemone::Process(const CMessageStep& msg_step)
 		{
 			const float f_dead = 0.18f;			// stick deadzone - sticks rarely rest at exact zero
 			RenderVR::SHandState hs_l, hs_r;
+			bool b_l = RenderVR::bHandState(0, hs_l) && hs_l.b_active;
+			bool b_r = RenderVR::bHandState(1, hs_r) && hs_r.b_active;
 
-			if (RenderVR::bHandState(0, hs_l) && hs_l.b_active)
+			// LEFT stick = move (walk/strafe, head-relative like the keyboard's v2Move).
+			if (b_l)
 			{
 				float f_x = hs_l.af_stick[0], f_y = hs_l.af_stick[1];
 				if (f_x >  f_dead || f_x < -f_dead) tin.v2Move.tX += f_x * 0.6f;	// strafe
 				if (f_y >  f_dead || f_y < -f_dead) tin.v2Move.tY += f_y;		// forward/back
 			}
 
-			if (RenderVR::bHandState(1, hs_r) && hs_r.b_active)
+			// RIGHT stick X = smooth turn, fed as a per-frame yaw the way mouse-look is.
+			if (b_r)
 			{
 				float f_turn = hs_r.af_stick[0];
 				if (f_turn > f_dead || f_turn < -f_dead)
 				{
-					// Radians this step: stick x * turn rate * elapsed.  ~2 rad/s at full deflection.
-					const float f_turn_rate = 2.0f;
+					const float f_turn_rate = 2.0f;			// ~2 rad/s at full deflection
 					tin.v2Rotate.tX += f_turn * f_turn_rate * msg_step.sStep;
 				}
 			}
+
+			// BUTTONS -> game commands.  Fold into the same command bitfields the keyboard fills:
+			// u4ButtonState is "held", u4ButtonHit is "pressed this frame" (rising edge), matching
+			// tinReadDefaultControls.  Grab/hand/throw/stow are intentionally left for the arm stage.
+			uint32 u4_vr = 0;
+			if (b_r && hs_r.b_a) u4_vr |= uCMD_JUMP;	// right primary (A) = jump
+			if (b_r && hs_r.b_b) u4_vr |= uCMD_CROUCH;	// right secondary (B) = crouch
+			if (b_l && hs_l.b_a) u4_vr |= uCMD_USE;		// left primary (X) = use / operate
+
+			static uint32 u4_vr_prev = 0;
+			tin.u4ButtonState |= u4_vr;
+			tin.u4ButtonHit   |= (u4_vr & ~u4_vr_prev);	// only the newly-pressed bits
+			u4_vr_prev = u4_vr;
 		}
 
 		//
