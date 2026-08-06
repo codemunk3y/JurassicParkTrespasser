@@ -170,6 +170,56 @@ static bool bSharedHeadPose
 	return true;
 }
 
+//**********************************************************************************************
+//
+// VR: the body camera with its ROLL removed, but its heading and PITCH kept.
+//
+// Trespasser's first-person camera rides the physics body, so it ROLLS with the ground the player
+// stands on - a side slope banks the horizon, which in a headset tilts the world off real vertical
+// and the head pose then compounds it.  The player's real head, tracked by the runtime against
+// gravity, already supplies roll; the body must not add its own.  Pitch is deliberately LEFT IN, so
+// mouse-look up/down still tilts the view - only the banking is removed.
+//
+// Keep the look direction (local +Y forward, which carries both yaw and pitch) and rebuild "up" so
+// it lies in the vertical plane through that direction, i.e. remove the twist about forward.  Camera
+// space is X=right, Y=forward, Z=up, right-handed (right = forward^worldUp, up = right^forward), and
+// gravity is -Z.  Degenerate when looking near-straight up or down (forward almost vertical), where
+// roll is meaningless - then return the body rotation unchanged.
+//
+// This shapes the RENDER camera only (a temp copy that is never written back), so gameplay, physics
+// and aiming still use the true body orientation - only the rendered viewpoint is de-banked.
+//
+// KNOWN LIMITATION (parked): mouse-pitch (up/down) still leaks into view ROLL.  It is NOT introduced
+// here - it survives both the from-to and this matrix form, so it originates upstream in the engine's
+// body/head orientation composition (same family as the deferred pitch/roll skew).  Parked because
+// the shipping VR input is motion controllers, not the mouse.  See docs/adr/0001-vr-mouse-pitch-roll-coupling.md.
+//
+static CRotate3<> r3BodyNoRoll(const CRotate3<>& r3_body)
+{
+	// v3 * r3 rotates the vector by r3 (v3Rotate itself is protected); local->world here.
+	// Keep the look direction exactly (so mouse yaw AND pitch survive untouched); only rebuild the
+	// up axis so it lies in the vertical plane through the look direction, which strips the roll.
+	CVector3<> v3_fwd = CVector3<>(0.0f, 1.0f, 0.0f) * r3_body;		// world look direction (unit)
+	CVector3<> v3_world_up(0.0f, 0.0f, 1.0f);
+
+	// Horizontal right, perpendicular to the look direction; near-zero when looking near-vertical.
+	CVector3<> v3_right = v3_fwd ^ v3_world_up;
+	if (v3_right * v3_right < 1e-6f)
+		return r3_body;							// looking near-straight up/down - leave as is
+
+	CDir3<> d3_right(v3_right);					// normalise the horizontal right axis
+	CVector3<> v3_level_up = d3_right ^ v3_fwd;	// levelled up: unit, in the vertical look plane
+
+	// Build the de-banked rotation DIRECTLY from the frame {right, forward, up}, rather than
+	// composing the body with a corrective delta.  The old from-to(up->levelledUp) delta is
+	// ill-conditioned near identity - for a clean pitch the two ups are equal in theory but differ
+	// by float noise, so the shortest-arc rotation picks a near-random axis and leaks roll INTO the
+	// pitch.  A matrix built straight from the axes has no such near-zero subtraction.
+	// CMatrix3 rows are the images of the body axes (X=right, Y=forward, Z=up); v3 * mx3 uses rows.
+	CMatrix3<> mx3(d3_right, v3_fwd, v3_level_up);
+	return CRotate3<>(mx3, true);				// orthonormal frame -> rotation
+}
+
 //
 // Class implementations.
 //
@@ -283,9 +333,10 @@ static bool bSharedHeadPose
 				float f_tan_h, f_tan_v;
 				if (bSharedHeadPose(r3_head, v3_head, f_tan_h, f_tan_v))
 				{
-					// Head first, then body - the same convention as the eye loop (Rotate.hpp:
-					// a*b means "apply a, then b").
-					pr3_backdrop.r3Rot = r3_head * pr3_backdrop.r3Rot;
+					// Head first, then the DE-BANKED body (roll stripped, pitch kept, so the backdrop
+					// stays level with the world eyes - see r3BodyNoRoll and the eye loop).  In this
+					// engine a*b means "apply a, then b" (Rotate.hpp).
+					pr3_backdrop.r3Rot = r3_head * r3BodyNoRoll(pr3_backdrop.r3Rot);
 
 					// Same zoom fold-in as the eye loop and the occlusion camera (the engine
 					// divides rViewWidth by the zoom when it builds the projection).
@@ -429,9 +480,12 @@ static bool bSharedHeadPose
 		CPresence3<>         pr3_occ     = wqcam.tGet()->pr3VPresence();
 		if (b_occ_head)
 		{
-			// Room-scale lean is rotated into world by the BODY rotation (set the position BEFORE
-			// composing the head in, exactly as the eye loop does); the head rotation then composes
-			// on top.
+			// De-bank the body first (roll stripped, pitch kept), so the occlusion candidates are
+			// gathered from the same levelled camera the eyes render from - see r3BodyNoRoll and the
+			// eye loop.  Room-scale lean is then rotated into world by that de-banked rotation (set
+			// the position BEFORE composing the head in, exactly as the eye loop does); the head
+			// rotation composes on top.
+			pr3_occ.r3Rot  = r3BodyNoRoll(pr3_occ.r3Rot);
 			pr3_occ.v3Pos += v3_occ_head * pr3_occ.r3Rot;
 			pr3_occ.r3Rot  = r3_occ_head * pr3_occ.r3Rot;
 
@@ -526,11 +580,19 @@ static bool bSharedHeadPose
 						CVector3<>(eyev.af_rot_v[0], eyev.af_rot_v[1], eyev.af_rot_v[2])
 					);
 
+					// LEVEL THE BODY: strip its roll, keep its heading and pitch.  Trespasser's
+					// camera banks with the ground it stands on, which would tip the VR horizon off
+					// vertical (and the head pose would compound it); the runtime already tracks real
+					// head roll against gravity, so the body must not add its own.  Pitch stays, so
+					// mouse-look up/down still works.  Do this BEFORE the room-scale offset and the
+					// head compose below, so both build on the de-banked body.  (See r3BodyNoRoll.)
+					pr3_eye.r3Rot = r3BodyNoRoll(pr3_eye.r3Rot);
+
 					// Room-scale movement: the LOCAL reference space puts its origin where the
 					// player's head was when the session began, so this is a small offset from
 					// the game camera rather than a position in the level.  It is rotated into
-					// world space by the BODY rotation, not the composed one - leaning left is
-					// leftward relative to the body, and must not itself be turned by the head.
+					// world space by the de-banked BODY rotation, not the composed one - leaning
+					// left is leftward relative to the body, and must not itself be turned by the head.
 					CVector3<> v3_head(eyev.af_pos[0], eyev.af_pos[1], eyev.af_pos[2]);
 
 					pr3_eye.v3Pos += v3_head * pr3_eye.r3Rot;
