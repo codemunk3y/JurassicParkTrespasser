@@ -1018,7 +1018,7 @@ public:
 						RenderD3D11::SubmitBumpPolygon(bv, i_n, p_texhandle, p_normalhandle, b_clamp);
 					}
 					else
-						RenderD3D11::SubmitPolygon(av, i_n, p_texhandle, b_clamp);
+						RenderD3D11::SubmitPolygon(av, i_n, p_texhandle, b_clamp, b_terrain);
 				}
 				// NB: no Present() here.  DrawPolygons runs more than once per frame (main scene
 				// + extra passes); each call accumulates into the D3D11 backend, and the single

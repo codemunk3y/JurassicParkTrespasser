@@ -39,6 +39,7 @@ param(
     [string] $RuntimeJson = '', # OpenXR runtime manifest; implies -VR. Blank = system default
     [int]    $VrScale = 100,    # per-eye render size, % of the runtime's recommendation
     [switch] $InputLog,         # (retained for compatibility; input logging is now always on)
+    [switch] $HandCal,          # VR hand-orientation calibration mode (TRESPASS_VR_HANDCAL)
     [switch] $Force,            # launch even if another trespass.exe appears to be running
     [string] $ExeDir = ''       # build output holding trespass.exe; blank = the default x64 Release
 )
@@ -123,6 +124,11 @@ Remove-Item Env:\TRESPASS_VR_STEREO -ErrorAction SilentlyContinue
 if ($Stereo) {
     $env:TRESPASS_VR_STEREO = "$Ipd"
     Write-Host "TRESPASS_VR_STEREO = $Ipd  (stereo ON, side-by-side, ${Ipd}mm IPD)" -ForegroundColor Magenta
+}
+Remove-Item Env:\TRESPASS_VR_HANDCAL -ErrorAction SilentlyContinue
+if ($HandCal) {
+    $env:TRESPASS_VR_HANDCAL = '1'
+    Write-Host "TRESPASS_VR_HANDCAL = 1  (left stick tunes the VR hand orientation)" -ForegroundColor Magenta
 }
 Remove-Item Env:\TRESPASS_INPUTLOG -ErrorAction SilentlyContinue
 if ($InputLog) {

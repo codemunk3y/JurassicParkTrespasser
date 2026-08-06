@@ -169,7 +169,7 @@ namespace
 
 	// This frame's triangles, expanded from fans, and one draw batch per texture run.
 	std::vector<RenderD3D11::SVert> s_verts;
-	struct SBatch { ID3D11ShaderResourceView* pSRV; UINT u_start; UINT u_count; bool b_clamp; int i_eye; };
+	struct SBatch { ID3D11ShaderResourceView* pSRV; UINT u_start; UINT u_count; bool b_clamp; bool b_terrain; int i_eye; };
 	std::vector<SBatch> s_batches;
 
 	// CTexture* -> SRV.  Static-world textures are persistent, so a grow-only cache is fine.
@@ -1296,7 +1296,7 @@ namespace RenderD3D11
 			s_i_frame_eyes = s_i_eye_count;
 	}
 
-	void SubmitPolygon(const SVert* pav_verts, int i_count, void* p_texture, bool b_clamp)
+	void SubmitPolygon(const SVert* pav_verts, int i_count, void* p_texture, bool b_clamp, bool b_terrain)
 	{
 		if (i_count < 3) return;
 
@@ -1316,11 +1316,13 @@ namespace RenderD3D11
 		// eye, else start a new one.  Merging across eyes would draw one eye's triangles into
 		// the other's viewport, since the viewport is set per eye at draw time.
 		if (!s_batches.empty() && s_batches.back().pSRV == p_srv &&
-		    s_batches.back().b_clamp == b_clamp && s_batches.back().i_eye == s_i_eye)
+		    s_batches.back().b_clamp == b_clamp && s_batches.back().b_terrain == b_terrain &&
+		    s_batches.back().i_eye == s_i_eye)
 			s_batches.back().u_count += u_added;
 		else
 		{
 			SBatch b; b.pSRV = p_srv; b.u_start = u_before; b.u_count = u_added; b.b_clamp = b_clamp;
+			b.b_terrain = b_terrain;
 			b.i_eye = s_i_eye;
 			s_batches.push_back(b);
 		}
@@ -1531,7 +1533,9 @@ namespace RenderD3D11
 				if (s_batches[i].i_eye != i_eye && s_batches[i].i_eye != i_EYE_ALL) continue;
 				ID3D11SamplerState* p_samp = s_batches[i].b_clamp ? s_pSampClamp : s_pSampWrap;
 				s_pd3dContext->PSSetSamplers(0, 1, &p_samp);
-				ID3D11PixelShader* p_want = (b_detile && !s_batches[i].b_clamp) ? s_pDetilePS : s_pPS;
+				// Detile (hex-tiling) only on terrain - applying it to every tiling surface makes
+				// fences and the like shimmer/blend oddly and only settle up close.
+				ID3D11PixelShader* p_want = (b_detile && !s_batches[i].b_clamp && s_batches[i].b_terrain) ? s_pDetilePS : s_pPS;
 				if (p_want != p_ps_bound) { s_pd3dContext->PSSetShader(p_want, 0, 0); p_ps_bound = p_want; }
 				s_pd3dContext->PSSetShaderResources(0, 1, &s_batches[i].pSRV);
 				s_pd3dContext->Draw(s_batches[i].u_count, s_batches[i].u_start);

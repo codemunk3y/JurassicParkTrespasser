@@ -175,8 +175,14 @@ void CInputDeemone::Process(const CMessageStep& msg_step)
 			bool b_l = RenderVR::bHandState(0, hs_l) && hs_l.b_active;
 			bool b_r = RenderVR::bHandState(1, hs_r) && hs_r.b_active;
 
+			// In hand-calibration mode the left stick is repurposed to tune the hand orientation
+			// (see Player.cpp), so suppress its movement here.
+			static int s_handcal = -1;
+			if (s_handcal < 0)
+				s_handcal = getenv("TRESPASS_VR_HANDCAL") ? 1 : 0;
+
 			// LEFT stick = move (walk/strafe, head-relative like the keyboard's v2Move).
-			if (b_l)
+			if (b_l && !s_handcal)
 			{
 				float f_x = hs_l.af_stick[0], f_y = hs_l.af_stick[1];
 				if (f_x >  f_dead || f_x < -f_dead) tin.v2Move.tX += f_x * 0.6f;	// strafe
@@ -198,9 +204,17 @@ void CInputDeemone::Process(const CMessageStep& msg_step)
 			// u4ButtonState is "held", u4ButtonHit is "pressed this frame" (rising edge), matching
 			// tinReadDefaultControls.  Grab/hand/throw/stow are intentionally left for the arm stage.
 			uint32 u4_vr = 0;
-			if (b_r && hs_r.b_a) u4_vr |= uCMD_JUMP;	// right primary (A) = jump
-			if (b_r && hs_r.b_b) u4_vr |= uCMD_CROUCH;	// right secondary (B) = crouch
-			if (b_l && hs_l.b_a) u4_vr |= uCMD_USE;		// left primary (X) = use / operate
+			// NB the arm is kept raised directly in the player code (it runs its hand block whenever
+			// a VR controller pose is present), NOT by feeding uCMD_HAND here - feeding uCMD_HAND puts
+			// the mouse into hand-aim mode and disables stick turning.
+			if (b_r && hs_r.b_a)       u4_vr |= uCMD_JUMP;	// right primary (A) = jump
+			if (b_r && hs_r.b_b)       u4_vr |= uCMD_CROUCH;// right secondary (B) = crouch
+			if (b_r && hs_r.b_grip)    u4_vr |= uCMD_GRAB;	// right grip (squeeze) = grab / hold
+			// Right trigger = use/fire the held item (pull the trigger on a held gun).  Left A is
+			// kept as a use fallback for now.
+			if (b_r && hs_r.b_trigger) u4_vr |= uCMD_USE;	// right trigger = fire / use
+			if (b_l && hs_l.b_a)       u4_vr |= uCMD_USE;	// left primary (X) = use (fallback)
+			if (b_l && hs_l.b_b)       u4_vr |= uCMD_THROW;	// left secondary (Y) = throw held object
 
 			static uint32 u4_vr_prev = 0;
 			tin.u4ButtonState |= u4_vr;

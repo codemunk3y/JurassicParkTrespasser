@@ -1,6 +1,6 @@
 /**********************************************************************************************
  *
- * Copyright © DreamWorks Interactive. 1996
+ * Copyright ï¿½ DreamWorks Interactive. 1996
  *
  * Contents: The implementation of Player.hpp.
  *
@@ -76,6 +76,7 @@
 #include "Lib/Math/MathUtil.hpp"
 
 #include "Lib/View/LineDraw.hpp"
+#include "Lib/View/RenderVR.hpp"			// VR: drive the physics arm from the controller pose
 #include "Lib/Sys/DebugConsole.hpp"
 #include "Lib/Sys/Profile.hpp"
 #include "Lib\EntityDBase\AnimationScript.hpp"
@@ -444,29 +445,29 @@ namespace
 		// If we parameterise the rotation by the C element of the quaternion (t), then the
 		// rotation is:
 		//
-		//		R = (t, sqrt(1 - t²)A)
+		//		R = (t, sqrt(1 - tï¿½)A)
 		//
 		// We wish to minimise the product of r3_move (Q) and R.  This is done by maximising
 		// the absolute value of the product's C element.  By quaternion multiplication, this is:
 		//
 		//		C = Q.c R.c - Q.S R.S
-		//		  = Q.c t - Q.S A sqrt(1-t²)
-		//		  = X t - Y sqrt(1-t²)				(X == Q.c,  Y == Q.S A)
+		//		  = Q.c t - Q.S A sqrt(1-tï¿½)
+		//		  = X t - Y sqrt(1-tï¿½)				(X == Q.c,  Y == Q.S A)
 		//
-		//		dC/dt = 0 = X - Y (-2t) / (2 sqrt(1-t²))
-		//				  = X + Y t / sqrt(1-t²)
-		//		Y t/sqrt(1-t²) = -X
-		//		Y² t²/(1-t²) = X²
-		//		t²/(1-t²) = X²/Y²
-		//		t² = X²/Y² (1-t²)
-		//		(1 + X²/Y²)t² = X²/Y²
-		//		t² = X²/Y² / (1 + X²/Y²)
-		//		t² = X²/(X² + Y²)
-		//		t = ± X / sqrt(X² + Y²)
+		//		dC/dt = 0 = X - Y (-2t) / (2 sqrt(1-tï¿½))
+		//				  = X + Y t / sqrt(1-tï¿½)
+		//		Y t/sqrt(1-tï¿½) = -X
+		//		Yï¿½ tï¿½/(1-tï¿½) = Xï¿½
+		//		tï¿½/(1-tï¿½) = Xï¿½/Yï¿½
+		//		tï¿½ = Xï¿½/Yï¿½ (1-tï¿½)
+		//		(1 + Xï¿½/Yï¿½)tï¿½ = Xï¿½/Yï¿½
+		//		tï¿½ = Xï¿½/Yï¿½ / (1 + Xï¿½/Yï¿½)
+		//		tï¿½ = Xï¿½/(Xï¿½ + Yï¿½)
+		//		t = ï¿½ X / sqrt(Xï¿½ + Yï¿½)
 		//
 		//	To find which sign of t yields the true maximum absolute value of C, examine C again:
 		//
-		//		C = X t - Y sqrt(1-t²)
+		//		C = X t - Y sqrt(1-tï¿½)
 		//
 		//	X t should be the same sign as -Y, thus we want X Y t < 0.
 		//		
@@ -2156,7 +2157,12 @@ private:
 			CAngles2 ang2_head = Angles2(r3_head);
 			CAngles2 ang2_start = ang2_head;
 
-			if (eHandActivity >= ehaACTIVE && !iSwinging && !iStowing && !bThrowing)
+			// In VR the head is aimed by the HMD (plus stick turn), not by keeping the hand on a flat
+			// screen - so skip the head-tracks-hand adjustment.  It otherwise clamps the head's
+			// body-relative yaw to the hand-view cone (~30 deg), which defeats the turn's body-drag
+			// threshold and leaves the body unable to follow the stick (VR turn regression).
+			if (eHandActivity >= ehaACTIVE && !iSwinging && !iStowing && !bThrowing &&
+			    !RenderVR::bSessionRunning())
 			{
 				//
 				// If palm has moved too far, track with head.
@@ -2396,6 +2402,105 @@ private:
 		CAngles2 ang2_head = Angles2(p3Head.r3Rot);
 
 		//
+		// VR ARM: drive the hand target from the right motion controller instead of the mouse.
+		//
+		// The physics arm already chases p3Hand, so we just set p3Hand from the controller pose each
+		// frame and keep the hand active; the existing emit + pickup/grab state machine then runs
+		// unchanged (grab comes in as uCMD_GRAB from the grip button).  RenderVR gives the hand pose
+		// in engine axes as an offset from the head/camera (the same frame the eyes use), so the hand
+		// in the player's BODY space is the head's body-space position plus that offset.  The mouse
+		// angle-accumulation block below is skipped while this is active (see b_vr_arm) so it does
+		// not overwrite p3Hand.
+		//
+		// FIRST PASS - position + grab are the point; the orientation mapping (r3HandRequestSpace is
+		// a head->hand look space) is best-effort and will likely need a calibration tweak so the
+		// held object lines up with the controller.  Reach is clamped to arm length so the physics
+		// does not auto-drop the hand for being out of range.
+		//
+		bool b_vr_arm = false;
+		if (RenderVR::bSessionRunning())
+		{
+			RenderVR::SHandState hs;
+			if (RenderVR::bHandState(1, hs) && hs.b_pose_valid)		// hand 1 = right
+			{
+				b_vr_arm = true;
+
+				CVector3<> v3_hand = p3HeadPlacement().v3Pos +
+					CVector3<>(hs.af_pos[0], hs.af_pos[1], hs.af_pos[2]);
+
+				// Clamp reach to arm length about the shoulder (physics drops the hand past ~1.5x).
+				CVector3<> v3_from_sh = v3_hand - v3Shoulder();
+				const TReal r_max_reach = 0.70;
+				TReal r_len = v3_from_sh.tLen();
+				if (r_len > r_max_reach && r_len > 0.0001)
+					v3_hand = v3Shoulder() + v3_from_sh * (r_max_reach / r_len);
+
+				p3Hand.v3Pos = v3_hand;
+
+				// The OpenXR grip pose axes do not line up with the game hand's rest orientation, so
+				// apply a fixed calibration rotation.  TUNABLE from headset feedback.  First 90 about
+				// forward (Y) brought the palm to face left; a second 90 about up (Z) rolls it "away
+				// from the body" as the player asked.  Adjust axes/degrees/signs here if still off.
+				CRotate3<> r3_ctrl(hs.f_rot_w,
+					CVector3<>(hs.af_rot_v[0], hs.af_rot_v[1], hs.af_rot_v[2]));
+
+				// Hand calibration: a fixed rotation of the controller grip pose into the game hand's
+				// rest frame.  Applied as a PRE-multiply (K * r3_ctrl), which rotates the hand in its
+				// OWN frame and so is pose-independent (a world-frame post-rotation would only be
+				// right for the one pose it was tuned at).  The three angles are the baked result of
+				// live calibration; adjust them, not the structure.
+				// Baked from live calibration in the headset (TRESPASS_VR_HANDCAL) - a natural
+				// handshake grip.  Re-run cal mode and read the log to re-tune.
+				static float s_cal_yaw_deg   = -58.9f;	// about hand up (Z)
+				static float s_cal_pitch_deg =   1.3f;	// about hand right (X)
+				static float s_cal_roll_deg  =  92.5f;	// about hand forward (Y)
+
+				// LIVE CALIBRATION (TRESPASS_VR_HANDCAL): the LEFT stick nudges the angles in the
+				// headset so the hand can be dialled in by eye across poses; left grip switches the
+				// left-stick Y from pitch to roll.  The current values are logged so they can be
+				// baked into the defaults above.  Off unless the env var is set.
+				static int s_cal_mode = -1;
+				if (s_cal_mode < 0)
+					s_cal_mode = getenv("TRESPASS_VR_HANDCAL") ? 1 : 0;
+				if (s_cal_mode)
+				{
+					RenderVR::SHandState hl;
+					if (RenderVR::bHandState(0, hl) && hl.b_active)
+					{
+						const float k_step = 1.0f;		// degrees per frame at full deflection
+						if (hl.af_stick[0] > 0.2f || hl.af_stick[0] < -0.2f)
+							s_cal_yaw_deg += hl.af_stick[0] * k_step;
+						if (hl.af_stick[1] > 0.2f || hl.af_stick[1] < -0.2f)
+						{
+							if (hl.b_grip) s_cal_roll_deg  += hl.af_stick[1] * k_step;
+							else           s_cal_pitch_deg += hl.af_stick[1] * k_step;
+						}
+						static int s_throttle = 0;
+						if (++s_throttle >= 20)
+						{
+							s_throttle = 0;
+							char b[160];
+							sprintf(b, "TRESPASS_VR: hand cal  yaw=%.1f  pitch=%.1f  roll=%.1f\n",
+								s_cal_yaw_deg, s_cal_pitch_deg, s_cal_roll_deg);
+							RenderVR::LogLine(b);
+						}
+					}
+				}
+
+				CRotate3<> r3_cal =
+					CRotate3<>(CDir3<>(CVector3<>(0.0, 0.0, 1.0)), CAngle(s_cal_yaw_deg   * dDEGREES)) *
+					CRotate3<>(CDir3<>(CVector3<>(1.0, 0.0, 0.0)), CAngle(s_cal_pitch_deg * dDEGREES)) *
+					CRotate3<>(CDir3<>(CVector3<>(0.0, 1.0, 0.0)), CAngle(s_cal_roll_deg  * dDEGREES));
+
+				p3Hand.r3Rot = (r3_cal * r3_ctrl) / r3HandRequestSpace();
+
+				bHandRotate = true;					// so the emit block sends the orientation
+				if (eHandActivity < ehaACTIVE)
+					eHandActivity = ehaACTIVE;		// keep the arm live, tracking the controller
+			}
+		}
+
+		//
 		// Perform any delayed substitution.
 		//
 
@@ -2593,7 +2698,7 @@ private:
 							// Too far away.
 							// Enable auto-crouch when we aim for any object, even without pickup.
 							// This won't necessarily be the object we pick up, but we'll crouch just the same.
-							if (b_allow_crouch && !(bAutoCrouching || msgc.bPressed(uCMD_CROUCH)))
+							if (b_allow_crouch && !RenderVR::bSessionRunning() && !(bAutoCrouching || msgc.bPressed(uCMD_CROUCH)))
 							{
 								// Can't reach it from here. See if we can reach it crouching.
 								CVector3<> v3_shoulder_crouch = v3Shoulder();
@@ -2717,7 +2822,7 @@ private:
 		if (iStowing || bThrowing)
 			// Disable all hand commands.
 			;
-		else if (msgc.bPressed(uCMD_HAND) || eHandHolding == ehhDROPPING)
+		else if (b_vr_arm || msgc.bPressed(uCMD_HAND) || eHandHolding == ehhDROPPING)
 		{
 			// Check for hand raise.
 			if (PlayerSettings.bHeadFollowActual && 
@@ -2774,7 +2879,9 @@ private:
 				if (eHandActivity > ehaINACTIVE ||
 					eHandHolding == ehhDROPPING)
 				{
-					if (!msgc.bPressed(uCMD_SHIFT) && !msgc.bPressed(uCMD_CONTROL))
+					// Skip the mouse angle-accumulation while the VR controller owns the hand target
+					// (set above) - otherwise it would overwrite p3Hand from the mouse delta.
+					if (!b_vr_arm && !msgc.bPressed(uCMD_SHIFT) && !msgc.bPressed(uCMD_CONTROL))
 					{
 						//
 						// Get hand angles in body space, and apply delta.
@@ -2985,7 +3092,12 @@ private:
 		// Rotate head.
 		//
 
-		if (eHandActivity == ehaINACTIVE && 
+		// In VR the arm is always active (it tracks the controller), but the right-stick turn still
+		// needs to drive the view - so allow the head turn here when b_vr_arm even though the hand is
+		// active.  The hand does not consume v2Rotate in VR (that path is guarded off), so this is the
+		// only consumer of the stick turn.  (The body itself only re-orients to the head when walking,
+		// line ~3161 - turning the body in place is a separate piece of work.)
+		if ((b_vr_arm || eHandActivity == ehaINACTIVE) &&
 			eHandHolding != ehhDROPPING)
 		{
 			// Apply mouse directly to head (kinda like that scene in 1984).
@@ -2996,7 +3108,7 @@ private:
 				// Head has swung around too much, drag the body, but only by a quarter turn max.
 				if (ang2_head.tX < 0)
 					ang2_body.tX += Max(ang2_head.tX - -PlayerSettings.fAngHeadTurnX, -dPI_2 * 0.95);
-				else 
+				else
 					ang2_body.tX += Min(ang2_head.tX -  PlayerSettings.fAngHeadTurnX, dPI_2 * 0.95);
 
 				CRotate3<> r3_body_new = CRotate3<>(d3ZAxis, CAngle(-ang2_body.tX));
@@ -3095,7 +3207,10 @@ private:
 		if (!bWithin(eHandHolding, ehhSEEKING, ehhGRABBING))
 			// Turn off auto-crouch whenever leaving grab state.
 			bAutoCrouching = false;
-		msgpr.subCrouch.Set(rt_high_urgency, 1, bAutoCrouching || msgc.bPressed(uCMD_CROUCH));
+		// Suppress AUTO-crouch in VR (it drops the whole body toward a low grab target, which reads
+		// as the player sinking into the ground while walking).  In VR the player sets their own
+		// height physically; manual crouch (uCMD_CROUCH) still works.
+		msgpr.subCrouch.Set(rt_high_urgency, 1, (bAutoCrouching && !RenderVR::bSessionRunning()) || msgc.bPressed(uCMD_CROUCH));
 
 		// Send jump command only once per key press.
 		msgpr.subJump.dData = false;
@@ -3623,7 +3738,7 @@ private:
 		//	Squaring both sides, expanding the vector equation to 3 scalar equations,
 		//	summing them, and rearranging, we have the quadratic equation
 		//
-		//		H² r² - 2 (H*S) r + S² - d² = 0
+		//		Hï¿½ rï¿½ - 2 (H*S) r + Sï¿½ - dï¿½ = 0
 		//
 
 		// Hand pos starts out as unit vector in desired direction.

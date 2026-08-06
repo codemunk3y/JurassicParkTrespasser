@@ -222,8 +222,10 @@ namespace RenderD3D11
 	// so the device/swap-chain/present infrastructure can be brought up and verified first.
 	//
 	// b_clamp selects clamp (vs wrap) texture addressing - set it for non-tileable
-	// textures so their UVs don't repeat.
-	void SubmitPolygon(const SVert* pav_verts, int i_count, void* p_texture, bool b_clamp);
+	// textures so their UVs don't repeat.  b_terrain marks landscape polygons, so the hex-tiling
+	// (detile) blend can be limited to the terrain and not applied to other tiling surfaces such as
+	// fences.
+	void SubmitPolygon(const SVert* pav_verts, int i_count, void* p_texture, bool b_clamp, bool b_terrain = false);
 
 	//******************************************************************************************
 	//
