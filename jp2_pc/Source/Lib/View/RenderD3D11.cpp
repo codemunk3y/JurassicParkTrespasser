@@ -1245,28 +1245,34 @@ namespace RenderD3D11
 		s_pd3dContext->OMSetBlendState(s_pBlend, af_blend, 0xFFFFFFFF);
 		s_pd3dContext->RSSetState(s_pRaster);
 
-		// The engine's screen-space vertices are sized to the frame the CPU pipeline projected
-		// for, so fit that into the eye image with its aspect preserved rather than stretching
-		// it - a stretched eye image is a direct comfort problem in a headset.
-		float f_scale = (float)i_width / (float)(s_i_frame_w > 0 ? s_i_frame_w : i_width);
-		float f_sh    = (float)i_height / (float)(s_i_frame_h > 0 ? s_i_frame_h : i_height);
-		if (f_sh < f_scale) f_scale = f_sh;
-
+		// FILL the whole eye image - do NOT letterbox (VR bug #3).  The runtime maps this image's
+		// full imageRect to the submitted fov (see RenderVR SubmitFrame / SetRenderedFov), and the
+		// CPU pipeline projected the eye's fov to fill the whole frame the vertex shader references
+		// (gViewParams = 2/s_i_frame), so filling the texture makes fov edges land on texture edges
+		// and the horizontal and vertical angular gains both come out to exactly 1.
+		//
+		// The OLD code letterboxed the desktop-aspect frame into the eye texture with its aspect
+		// preserved, reasoning that stretching is a comfort problem.  That was the bug: it left the
+		// net horizontal-to-vertical angular gain at desktop_frame_aspect / eye_texture_aspect
+		// (~1.97 for a 16:9 mirror into a 0.90 eye), a fixed anisotropic stretch baked into the
+		// headset.  Head-level it just looks a touch wide; roll the head and it SHEARS (square pixels
+		// -> diamonds), because the stretch axis stops lining up with the world vertical.  Crucially
+		// the ratio does NOT contain the frustum fov, which is why the earlier fAspectRatio tweak
+		// changed the numbers and nothing on screen.  Any stretch stored in the texture (the content
+		// is squeezed to the texture's shape) is undone by the runtime's imageRect->fov mapping, so
+		// filling is not just distortion-free but also uses the full vertical field and leaves no
+		// border to bleed (this subsumes the old black-letterbox fix, VR bug #2b).
 		D3D11_VIEWPORT vp;
-		vp.Width    = (s_i_frame_w > 0 ? s_i_frame_w : i_width)  * f_scale;
-		vp.Height   = (s_i_frame_h > 0 ? s_i_frame_h : i_height) * f_scale;
-		vp.TopLeftX = (i_width  - vp.Width)  * 0.5f;
-		vp.TopLeftY = (i_height - vp.Height) * 0.5f;
+		vp.Width    = (float)i_width;
+		vp.Height   = (float)i_height;
+		vp.TopLeftX = 0.0f;
+		vp.TopLeftY = 0.0f;
 		vp.MinDepth = 0.0f; vp.MaxDepth = 1.0f;
 		s_pd3dContext->RSSetViewports(1, &vp);
 
-		// Clear the eye image to BLACK, not the sky fog colour.  The rendered frame is letterboxed
-		// into the eye texture (the CPU pipeline projects at the desktop window's aspect, the eye
-		// texture is a different, taller shape), so a wide border is left around the viewport.  The
-		// sky blit and geometry cover the viewport, so this clear colour only ever shows in that
-		// border - and in a dark headset a fog-coloured (often near-white) border glows in the
-		// periphery and bleeds.  Black makes the dead area disappear.  (The desktop mirror keeps the
-		// fog clear; cropping the border away entirely belongs with the projection/aspect work.)
+		// Clear to BLACK.  With the fill above the viewport now covers the whole image, so this only
+		// shows through colour-key holes / before the sky blit; black keeps any such gap from glowing
+		// in a dark headset (the desktop mirror keeps the fog clear).
 		const float af_clear[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
 		s_pd3dContext->ClearRenderTargetView(p_rtv, af_clear);
 		// Depth cleared to 0 (far); closer fragments have larger rhw and win via GEQUAL.
